@@ -39,7 +39,7 @@ func DefaultKeyMap() KeyMap {
 			key.WithHelp("up/pgup", "scroll up"),
 		),
 		ScrollDown: key.NewBinding(
-			key.WithKeys("down", "pgdown"),
+			key.WithKeys("down", "pgdown", "pgdn"),
 			key.WithHelp("down/pgdn", "scroll down"),
 		),
 		NewLine: key.NewBinding(

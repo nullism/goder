@@ -32,7 +32,7 @@ type DisplayMessage struct {
 // MessageList holds the conversation display state.
 type MessageList struct {
 	messages  []DisplayMessage
-	offset    int // scroll offset (index of first visible message)
+	offset    int // scroll offset (lines from bottom)
 	streaming int // index of the current streaming message, or -1
 }
 
@@ -169,22 +169,25 @@ func (ml *MessageList) AddToolResult(toolName, output string, isError bool) {
 }
 
 func (ml *MessageList) scrollToBottom() {
-	ml.offset = len(ml.messages)
+	ml.offset = 0
 }
 
 // ScrollUp moves the viewport up.
 func (ml *MessageList) ScrollUp(lines int) {
-	ml.offset -= lines
-	if ml.offset < 0 {
-		ml.offset = 0
+	if lines <= 0 {
+		return
 	}
+	ml.offset += lines
 }
 
 // ScrollDown moves the viewport down.
 func (ml *MessageList) ScrollDown(lines int) {
-	ml.offset += lines
-	if ml.offset > len(ml.messages) {
-		ml.offset = len(ml.messages)
+	if lines <= 0 {
+		return
+	}
+	ml.offset -= lines
+	if ml.offset < 0 {
+		ml.offset = 0
 	}
 }
 
@@ -204,11 +207,22 @@ func (ml *MessageList) View(width, height int) string {
 
 	// Truncate to fit height (simple approach: split to lines, take last N)
 	allLines := strings.Split(content, "\n")
-	if len(allLines) > height {
-		allLines = allLines[len(allLines)-height:]
+	lineCount := len(allLines)
+	if height < 1 {
+		return ""
 	}
 
-	result := strings.Join(allLines, "\n")
+	start := lineCount - height - ml.offset
+	if start < 0 {
+		start = 0
+	}
+	end := start + height
+	if end > lineCount {
+		end = lineCount
+	}
+
+	visible := allLines[start:end]
+	result := strings.Join(visible, "\n")
 
 	// Pad to fill height
 	currentLines := strings.Count(result, "\n") + 1

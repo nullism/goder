@@ -214,7 +214,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.handlePermissionKey(msg)
 		}
 
+		scrollAmount := m.messageScrollAmount()
+
 		switch {
+		case key.Matches(msg, m.keys.ScrollUp):
+			if !m.thinking {
+				m.msgs.ScrollUp(scrollAmount)
+			}
+			return m, nil
+
+		case key.Matches(msg, m.keys.ScrollDown):
+			if !m.thinking {
+				m.msgs.ScrollDown(scrollAmount)
+			}
+			return m, nil
+
 		case key.Matches(msg, m.keys.Quit):
 			m.confirmQuit = true
 			return m, nil
@@ -494,6 +508,29 @@ func (m Model) handleSettingsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	return m, cmd
+}
+
+// messageScrollAmount returns the number of lines to scroll for each scroll action.
+func (m Model) messageScrollAmount() int {
+	if m.width == 0 {
+		return 1
+	}
+
+	headerHeight := 1
+	inputHeight := m.input.Height()
+	statusHeight := 1
+	separatorLines := 2
+	msgHeight := m.height - headerHeight - inputHeight - statusHeight - separatorLines
+	if msgHeight < 3 {
+		msgHeight = 3
+	}
+
+	scroll := msgHeight / 2
+	if scroll < 1 {
+		scroll = 1
+	}
+
+	return scroll
 }
 
 // View implements tea.Model.
