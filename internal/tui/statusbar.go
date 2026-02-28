@@ -18,7 +18,7 @@ func StatusBarView(mode Mode, msgCount int, width int) string {
 	items := []string{
 		fmt.Sprintf("%s %s", statusKeyStyle.Render("mode:"), statusDescStyle.Render(modeStr)),
 		fmt.Sprintf("%s %s", statusKeyStyle.Render("msgs:"), statusDescStyle.Render(fmt.Sprintf("%d", msgCount))),
-		fmt.Sprintf("%s %s", statusKeyStyle.Render("enter"), statusDescStyle.Render("submit")),
+		fmt.Sprintf("%s %s", statusKeyStyle.Render("ctrl+s"), statusDescStyle.Render("submit")),
 		fmt.Sprintf("%s %s", statusKeyStyle.Render("ctrl+t"), statusDescStyle.Render("toggle")),
 		fmt.Sprintf("%s %s", statusKeyStyle.Render("ctrl+c"), statusDescStyle.Render("quit")),
 	}

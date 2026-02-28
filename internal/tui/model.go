@@ -56,7 +56,7 @@ func New() Model {
 func (m Model) Init() tea.Cmd {
 	return tea.Batch(
 		tea.SetWindowTitle("goder"),
-		m.input.textInput.Focus(),
+		m.input.Focus(),
 	)
 }
 
@@ -127,9 +127,9 @@ func (m Model) View() string {
 		return "loading..."
 	}
 
-	// Layout: header (2 lines) + messages (flexible) + input (3 lines) + status (1 line)
+	// Layout: header (1 line) + messages (flexible) + input (dynamic) + status (1 line)
 	headerHeight := 1
-	inputHeight := 3
+	inputHeight := m.input.Height()
 	statusHeight := 1
 	separatorLines := 2 // blank lines between sections
 	msgHeight := m.height - headerHeight - inputHeight - statusHeight - separatorLines

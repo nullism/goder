@@ -21,8 +21,8 @@ func DefaultKeyMap() KeyMap {
 			key.WithHelp("ctrl+c", "quit"),
 		),
 		Submit: key.NewBinding(
-			key.WithKeys("enter"),
-			key.WithHelp("enter", "submit"),
+			key.WithKeys("ctrl+s"),
+			key.WithHelp("ctrl+s", "submit"),
 		),
 		ToggleMode: key.NewBinding(
 			key.WithKeys("ctrl+t"),
@@ -37,8 +37,8 @@ func DefaultKeyMap() KeyMap {
 			key.WithHelp("down/pgdn", "scroll down"),
 		),
 		NewLine: key.NewBinding(
-			key.WithKeys("shift+enter", "alt+enter"),
-			key.WithHelp("shift+enter", "new line"),
+			key.WithKeys("enter"),
+			key.WithHelp("enter", "new line"),
 		),
 		Help: key.NewBinding(
 			key.WithKeys("ctrl+?"),
