@@ -7,7 +7,7 @@ import (
 )
 
 // StatusBarView renders the bottom status bar.
-func StatusBarView(mode Mode, msgCount int, width int) string {
+func StatusBarView(mode Mode, msgCount int, width int, thinking bool, model string) string {
 	sep := statusSepStyle.Render(" | ")
 
 	modeStr := "plan"
@@ -18,10 +18,18 @@ func StatusBarView(mode Mode, msgCount int, width int) string {
 	items := []string{
 		fmt.Sprintf("%s %s", statusKeyStyle.Render("mode:"), statusDescStyle.Render(modeStr)),
 		fmt.Sprintf("%s %s", statusKeyStyle.Render("msgs:"), statusDescStyle.Render(fmt.Sprintf("%d", msgCount))),
+	}
+
+	if thinking {
+		items = append(items, thinkingStatusStyle.Render("thinking..."))
+	}
+
+	items = append(items,
 		fmt.Sprintf("%s %s", statusKeyStyle.Render("ctrl+s"), statusDescStyle.Render("submit")),
 		fmt.Sprintf("%s %s", statusKeyStyle.Render("ctrl+t"), statusDescStyle.Render("toggle")),
+		fmt.Sprintf("%s %s", statusKeyStyle.Render("esc"), statusDescStyle.Render("cancel")),
 		fmt.Sprintf("%s %s", statusKeyStyle.Render("ctrl+c"), statusDescStyle.Render("quit")),
-	}
+	)
 
 	bar := ""
 	for i, item := range items {

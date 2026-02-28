@@ -1,0 +1,22 @@
+# Environment and secrets
+.env
+.env.*
+
+# Build output
+/goder
+/bin/
+
+# Database
+*.db
+*.db-wal
+*.db-shm
+
+# Config (may contain API keys)
+.goder.json
+
+# Go
+/vendor/
+
+# OS
+.DS_Store
+Thumbs.db

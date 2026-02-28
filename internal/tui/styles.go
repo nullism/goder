@@ -15,6 +15,9 @@ var (
 	colorError     = lipgloss.Color("#EF4444") // red
 	colorUser      = lipgloss.Color("#60A5FA") // blue
 	colorAssistant = lipgloss.Color("#A78BFA") // purple
+	colorTool      = lipgloss.Color("#FBBF24") // yellow
+	colorSuccess   = lipgloss.Color("#34D399") // green
+	colorWarning   = lipgloss.Color("#F97316") // orange
 )
 
 // Header styles
@@ -58,6 +61,23 @@ var (
 	timestampStyle = lipgloss.NewStyle().
 			Foreground(colorDim).
 			Italic(true)
+
+	streamingIndicator = lipgloss.NewStyle().
+				Foreground(colorSecondary).
+				Bold(true)
+)
+
+// Tool styles
+var (
+	toolCallStyle = lipgloss.NewStyle().
+			Foreground(colorTool).
+			Bold(true)
+
+	toolResultStyle = lipgloss.NewStyle().
+			Foreground(colorSuccess)
+
+	toolErrorStyle = lipgloss.NewStyle().
+			Foreground(colorError)
 )
 
 // Input area styles
@@ -92,6 +112,10 @@ var (
 
 	statusSepStyle = lipgloss.NewStyle().
 			Foreground(colorBorder)
+
+	thinkingStatusStyle = lipgloss.NewStyle().
+				Foreground(colorWarning).
+				Bold(true)
 )
 
 // General styles
@@ -106,4 +130,16 @@ var (
 	helpStyle = lipgloss.NewStyle().
 			Foreground(colorDim).
 			Italic(true)
+
+	thinkingStyle = lipgloss.NewStyle().
+			Foreground(colorWarning).
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(colorWarning).
+			Padding(0, 1)
+
+	permissionStyle = lipgloss.NewStyle().
+			Foreground(colorText).
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(colorWarning).
+			Padding(0, 1)
 )

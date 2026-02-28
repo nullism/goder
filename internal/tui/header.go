@@ -7,7 +7,7 @@ import (
 )
 
 // HeaderView renders the top header bar showing the logo, mode indicator, and model name.
-func HeaderView(mode Mode, width int) string {
+func HeaderView(mode Mode, model string, width int) string {
 	logo := logoStyle.Render("goder")
 
 	var modeLabel string
@@ -18,7 +18,9 @@ func HeaderView(mode Mode, width int) string {
 		modeLabel = modeBuildStyle.Render("BUILD")
 	}
 
-	left := fmt.Sprintf("%s  %s", logo, modeLabel)
+	modelLabel := dimStyle.Render(model)
+
+	left := fmt.Sprintf("%s  %s  %s", logo, modeLabel, modelLabel)
 	right := dimStyle.Render("ctrl+t: switch mode")
 
 	gap := width - lipgloss.Width(left) - lipgloss.Width(right) - 2

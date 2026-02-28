@@ -7,6 +7,7 @@ type KeyMap struct {
 	Quit       key.Binding
 	Submit     key.Binding
 	ToggleMode key.Binding
+	Cancel     key.Binding
 	ScrollUp   key.Binding
 	ScrollDown key.Binding
 	NewLine    key.Binding
@@ -27,6 +28,10 @@ func DefaultKeyMap() KeyMap {
 		ToggleMode: key.NewBinding(
 			key.WithKeys("ctrl+t"),
 			key.WithHelp("ctrl+t", "toggle mode"),
+		),
+		Cancel: key.NewBinding(
+			key.WithKeys("esc"),
+			key.WithHelp("esc", "cancel"),
 		),
 		ScrollUp: key.NewBinding(
 			key.WithKeys("up", "pgup"),
