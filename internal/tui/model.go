@@ -79,6 +79,10 @@ type Model struct {
 	streamBuf   string              // accumulates streaming text (plain string to avoid strings.Builder copy panic)
 	permReq     *permission.Request // pending permission request
 
+	// Settings overlay
+	settings     Settings
+	settingsOpen bool
+
 	// Program reference for sending commands from goroutines.
 	// This is a pointer to a shared struct so that all copies of Model
 	// (including the one inside tea.Program) share the same reference.
@@ -92,6 +96,7 @@ func New(cfg config.Config, database *db.DB, sessions *session.Service, registry
 		keys:     DefaultKeyMap(),
 		input:    NewInput(),
 		msgs:     NewMessageList(),
+		settings: NewSettings(),
 		cfg:      cfg,
 		database: database,
 		sessions: sessions,
@@ -110,12 +115,20 @@ func (m *Model) SetProgram(p *tea.Program) {
 
 // Init implements tea.Model.
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(
+	cmds := []tea.Cmd{
 		tea.SetWindowTitle("goder"),
 		m.input.Focus(),
 		m.initSession(),
 		m.listenForPermissions(),
-	)
+	}
+
+	// If no API key is configured, show a helpful message
+	if m.cfg.APIKey == "" {
+		m.msgs.Add(message.System,
+			"No API key configured. Press ctrl+k to open settings and enter your OpenAI API key.")
+	}
+
+	return tea.Batch(cmds...)
 }
 
 // initSession creates or loads the initial session.
@@ -179,7 +192,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case agentEventMsg:
 		return m.handleAgentEvent(msg.event)
 
+	case modelsLoadedMsg:
+		m.settings.HandleModelsLoaded(msg.models, msg.err)
+		return m, nil
+
 	case tea.KeyMsg:
+		// Handle settings overlay if open
+		if m.settingsOpen {
+			return m.handleSettingsKey(msg)
+		}
+
 		// Handle permission dialog keys first
 		if m.permReq != nil {
 			return m.handlePermissionKey(msg)
@@ -199,6 +221,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.thinking = false
 				m.msgs.Add(message.System, "Agent cancelled.")
 				return m, m.listenForPermissions()
+			}
+
+		case key.Matches(msg, m.keys.Settings):
+			if !m.thinking {
+				m.settingsOpen = true
+				m.settings = NewSettings() // reset state
+				m.input.Blur()
+				return m, nil
 			}
 
 		case key.Matches(msg, m.keys.ToggleMode):
@@ -245,6 +275,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // submitPrompt sends a user message and starts the agent loop.
 func (m *Model) submitPrompt(prompt string) tea.Cmd {
+	// Check if API key is configured
+	if m.cfg.APIKey == "" {
+		m.msgs.Add(message.System,
+			"No API key configured. Press ctrl+k to open settings and enter your OpenAI API key.")
+		return nil
+	}
+
 	// Add user message
 	sessionID := m.sessions.CurrentID()
 	userMsg := message.NewUserMessage(sessionID, prompt)
@@ -385,6 +422,75 @@ func (m Model) handlePermissionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// handleSettingsKey routes key events to the settings overlay and handles
+// the resulting actions (save API key, select model, close overlay).
+func (m Model) handleSettingsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	prevView := m.settings.view
+
+	settings, shouldClose, cmd := m.settings.Update(msg)
+	m.settings = settings
+
+	if shouldClose {
+		m.settingsOpen = false
+		return m, m.input.Focus()
+	}
+
+	// Handle transition to model selection (trigger fetch)
+	if prevView != settingsViewModels && m.settings.view == settingsViewModels {
+		if m.prov != nil {
+			return m, fetchModelsCmd(context.Background(), m.prov.ListModels)
+		}
+		m.settings.HandleModelsLoaded(nil, fmt.Errorf("no provider configured (set API key first)"))
+		return m, nil
+	}
+
+	// Handle API key save on enter in API key view
+	if m.settings.view == settingsViewAPIKey && msg.String() == "enter" {
+		apiKey := m.settings.APIKeyValue()
+		if apiKey == "" {
+			return m, cmd
+		}
+
+		// Update config and provider
+		m.cfg.APIKey = apiKey
+		m.prov.SetAPIKey(apiKey)
+
+		// Persist to config file
+		if err := config.Save(m.cfg); err != nil {
+			m.settings.SetFeedback(fmt.Sprintf("Save failed: %s", err.Error()), true)
+			return m, cmd
+		}
+
+		m.settings.SetFeedback("API key saved successfully", false)
+		m.settings.view = settingsViewMenu
+		return m, cmd
+	}
+
+	// Handle model selection on enter in model view
+	if m.settings.view == settingsViewModels && msg.String() == "enter" {
+		selected := m.settings.SelectedModel()
+		if selected == "" {
+			return m, cmd
+		}
+
+		// Update config and provider
+		m.cfg.Model = selected
+		m.prov.SetModel(selected)
+
+		// Persist to config file
+		if err := config.Save(m.cfg); err != nil {
+			m.settings.SetFeedback(fmt.Sprintf("Save failed: %s", err.Error()), true)
+			return m, cmd
+		}
+
+		m.settings.SetFeedback(fmt.Sprintf("Model set to %s", selected), false)
+		m.settings.view = settingsViewMenu
+		return m, cmd
+	}
+
+	return m, cmd
+}
+
 // View implements tea.Model.
 func (m Model) View() string {
 	if m.width == 0 {
@@ -406,7 +512,9 @@ func (m Model) View() string {
 
 	// Show permission dialog overlay if needed
 	var inputView string
-	if m.permReq != nil {
+	if m.settingsOpen {
+		inputView = m.settings.View(m.width, m.cfg.APIKey, m.cfg.Model)
+	} else if m.permReq != nil {
 		inputView = m.renderPermissionDialog()
 	} else if m.thinking {
 		inputView = thinkingStyle.Width(m.width - 4).Render("  thinking...")

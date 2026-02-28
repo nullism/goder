@@ -58,6 +58,15 @@ type Provider interface {
 
 	// SendMessage sends a request to the LLM and returns a channel of streaming events.
 	SendMessage(ctx context.Context, req Request) (<-chan StreamEvent, error)
+
+	// ListModels returns the available model IDs from the provider.
+	ListModels(ctx context.Context) ([]string, error)
+
+	// SetAPIKey updates the provider's API key at runtime.
+	SetAPIKey(apiKey string)
+
+	// SetModel updates the provider's model at runtime.
+	SetModel(model string)
 }
 
 // ToolsToDefinitions converts a tools.Registry into provider ToolDefinitions.

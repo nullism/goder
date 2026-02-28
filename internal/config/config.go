@@ -145,6 +145,33 @@ func defaultDataDir() (string, error) {
 	return filepath.Join(home, ".local", "share", "goder"), nil
 }
 
+// Save persists the configuration to the user-level config file
+// (~/.config/goder/config.json or $XDG_CONFIG_HOME/goder/config.json).
+// Only serializable fields are written; WorkDir is excluded (json:"-").
+func Save(cfg Config) error {
+	configDir, err := os.UserConfigDir()
+	if err != nil {
+		return fmt.Errorf("determining config directory: %w", err)
+	}
+
+	dir := filepath.Join(configDir, "goder")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("creating config directory: %w", err)
+	}
+
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshaling config: %w", err)
+	}
+
+	path := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		return fmt.Errorf("writing config file: %w", err)
+	}
+
+	return nil
+}
+
 // DBPath returns the path to the SQLite database file.
 func (c Config) DBPath() string {
 	return filepath.Join(c.DataDir, "goder.db")

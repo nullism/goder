@@ -143,3 +143,39 @@ var (
 			BorderForeground(colorWarning).
 			Padding(0, 1)
 )
+
+// Settings overlay styles
+var (
+	settingsStyle = lipgloss.NewStyle().
+			Foreground(colorText).
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(colorSecondary).
+			Padding(0, 1)
+
+	settingsTitleStyle = lipgloss.NewStyle().
+				Foreground(colorSecondary).
+				Bold(true)
+
+	settingsItemStyle = lipgloss.NewStyle().
+				Foreground(colorText)
+
+	settingsSelectedStyle = lipgloss.NewStyle().
+				Foreground(colorPrimary).
+				Bold(true)
+
+	settingsCursorStyle = lipgloss.NewStyle().
+				Foreground(colorSecondary).
+				Bold(true)
+
+	settingsKeyHintStyle = lipgloss.NewStyle().
+				Foreground(colorDim).
+				Italic(true)
+
+	settingsSuccessStyle = lipgloss.NewStyle().
+				Foreground(colorSuccess).
+				Bold(true)
+
+	settingsErrorStyle = lipgloss.NewStyle().
+				Foreground(colorError).
+				Bold(true)
+)

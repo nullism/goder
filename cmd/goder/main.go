@@ -23,13 +23,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Validate API key
-	if cfg.APIKey == "" {
-		fmt.Fprintf(os.Stderr, "error: no API key configured\n")
-		fmt.Fprintf(os.Stderr, "Set OPENAI_API_KEY environment variable or configure it in .goder.json\n")
-		os.Exit(1)
-	}
-
 	// Initialize database
 	database, err := db.New(cfg.DBPath())
 	if err != nil {

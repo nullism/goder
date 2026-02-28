@@ -12,6 +12,7 @@ type KeyMap struct {
 	ScrollDown key.Binding
 	NewLine    key.Binding
 	Help       key.Binding
+	Settings   key.Binding
 }
 
 // DefaultKeyMap returns the default set of key bindings.
@@ -48,6 +49,10 @@ func DefaultKeyMap() KeyMap {
 		Help: key.NewBinding(
 			key.WithKeys("ctrl+?"),
 			key.WithHelp("ctrl+?", "help"),
+		),
+		Settings: key.NewBinding(
+			key.WithKeys("ctrl+k"),
+			key.WithHelp("ctrl+k", "settings"),
 		),
 	}
 }

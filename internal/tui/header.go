@@ -21,7 +21,7 @@ func HeaderView(mode Mode, model string, width int) string {
 	modelLabel := dimStyle.Render(model)
 
 	left := fmt.Sprintf("%s  %s  %s", logo, modeLabel, modelLabel)
-	right := dimStyle.Render("ctrl+t: switch mode")
+	right := dimStyle.Render("ctrl+k: settings  ctrl+t: switch mode")
 
 	gap := width - lipgloss.Width(left) - lipgloss.Width(right) - 2
 	if gap < 1 {
