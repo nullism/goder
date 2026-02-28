@@ -83,12 +83,17 @@ func (i *Input) Update(msg tea.Msg) tea.Cmd {
 }
 
 // View renders the input area.
-func (i *Input) View(width int) string {
+func (i *Input) View(width int, mode Mode) string {
 	i.textArea.SetWidth(width - 4) // account for border + padding
 
-	style := inputBorderStyle
+	borderColor := colorPlan
+	if mode == BuildMode {
+		borderColor = colorBuild
+	}
+
+	style := inputBorderStyle.BorderForeground(borderColor)
 	if i.focused {
-		style = inputFocusedBorderStyle
+		style = inputFocusedBorderStyle.BorderForeground(borderColor)
 	}
 
 	return style.Width(width - 4).Render(i.textArea.View())

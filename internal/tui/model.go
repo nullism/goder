@@ -83,6 +83,9 @@ type Model struct {
 	settings     Settings
 	settingsOpen bool
 
+	// Quit confirmation
+	confirmQuit bool
+
 	// Program reference for sending commands from goroutines.
 	// This is a pointer to a shared struct so that all copies of Model
 	// (including the one inside tea.Program) share the same reference.
@@ -197,6 +200,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
+		if m.confirmQuit {
+			return m.handleQuitConfirmKey(msg)
+		}
+
 		// Handle settings overlay if open
 		if m.settingsOpen {
 			return m.handleSettingsKey(msg)
@@ -209,10 +216,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		switch {
 		case key.Matches(msg, m.keys.Quit):
-			if m.agentCancel != nil {
-				m.agentCancel()
-			}
-			return m, tea.Quit
+			m.confirmQuit = true
+			return m, nil
 
 		case key.Matches(msg, m.keys.Cancel):
 			if m.thinking && m.agentCancel != nil {
@@ -510,21 +515,47 @@ func (m Model) View() string {
 	header := HeaderView(m.mode, m.cfg.Model, m.width)
 	msgs := m.msgs.View(m.width, msgHeight)
 
-	// Show permission dialog overlay if needed
+	// Show confirmation dialog if quitting
 	var inputView string
-	if m.settingsOpen {
+	if m.confirmQuit {
+		inputView = m.renderQuitConfirmDialog()
+	} else if m.settingsOpen {
 		inputView = m.settings.View(m.width, m.cfg.APIKey, m.cfg.Model)
 	} else if m.permReq != nil {
 		inputView = m.renderPermissionDialog()
 	} else if m.thinking {
 		inputView = thinkingStyle.Width(m.width - 4).Render("  thinking...")
 	} else {
-		inputView = m.input.View(m.width)
+		inputView = m.input.View(m.width, m.mode)
 	}
 
 	status := StatusBarView(m.mode, m.msgs.Count(), m.width, m.thinking, m.cfg.Model)
 
 	return fmt.Sprintf("%s\n%s\n%s\n%s", header, msgs, inputView, status)
+}
+
+
+// handleQuitConfirmKey handles key presses in the quit confirmation dialog.
+func (m Model) handleQuitConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "y", "Y":
+		if m.agentCancel != nil {
+			m.agentCancel()
+		}
+		return m, tea.Quit
+	case "n", "N", "esc":
+		m.confirmQuit = false
+		return m, nil
+	}
+
+	return m, nil
+}
+
+
+// renderQuitConfirmDialog renders the quit confirmation dialog.
+func (m Model) renderQuitConfirmDialog() string {
+	dialog := "  Quit goder?\n\n  [y] Yes  [n] No"
+	return permissionStyle.Width(m.width - 4).Render(dialog)
 }
 
 // renderPermissionDialog renders the permission approval dialog.

@@ -18,6 +18,7 @@ func StatusBarView(mode Mode, msgCount int, width int, thinking bool, model stri
 	items := []string{
 		fmt.Sprintf("%s %s", statusKeyStyle.Render("mode:"), statusDescStyle.Render(modeStr)),
 		fmt.Sprintf("%s %s", statusKeyStyle.Render("msgs:"), statusDescStyle.Render(fmt.Sprintf("%d", msgCount))),
+		fmt.Sprintf("%s %s", statusKeyStyle.Render("model:"), statusDescStyle.Render(model)),
 	}
 
 	if thinking {
