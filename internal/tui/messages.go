@@ -287,7 +287,11 @@ func renderDisplayMessage(msg DisplayMessage, width int) string {
 	if contentWidth < 20 {
 		contentWidth = 20
 	}
-	body := msgContentStyle.Width(contentWidth).Render(msg.Content)
+	body := msg.Content
+	if msg.Role == message.Assistant {
+		body = renderMarkdown(body)
+	}
+	body = msgContentStyle.Width(contentWidth).Render(body)
 
 	return header + "\n" + body
 }
