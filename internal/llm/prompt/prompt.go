@@ -32,10 +32,11 @@ func BuildSystemPrompt(mode string, workDir string, registry *tools.Registry) st
 	if mode == "plan" {
 		sb.WriteString("# Mode: PLAN\n\n")
 		sb.WriteString("You are in PLAN mode. You should analyze and reason about the codebase but NOT make any modifications.\n")
-		sb.WriteString("- Do NOT use the write, edit, or bash tools to modify files.\n")
-		sb.WriteString("- You CAN use bash for read-only commands (e.g., git status, git log, ls).\n")
-		sb.WriteString("- Focus on understanding, explaining, and planning.\n")
-		sb.WriteString("- If the user asks you to make changes, explain what you would do but remind them to switch to BUILD mode.\n\n")
+		sb.WriteString("- Do NOT use tools that modify files (write, edit). These tools are not available in this mode.\n")
+		sb.WriteString("- ACTIVELY USE the read-only tools (glob, grep, view, ls, fetch) to explore the codebase and gather context.\n")
+		sb.WriteString("- Good planning requires investigation. Before forming a plan, search for relevant files, read their contents, and understand the existing code structure.\n")
+		sb.WriteString("- When the user asks about changes, explore the codebase first, then explain what changes you would make and where.\n")
+		sb.WriteString("- If the user wants to execute changes, remind them to switch to BUILD mode (ctrl+t).\n\n")
 	} else {
 		sb.WriteString("# Mode: BUILD\n\n")
 		sb.WriteString("You are in BUILD mode. You can create, edit, and delete files and run commands.\n")

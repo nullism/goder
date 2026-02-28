@@ -583,7 +583,7 @@ func (m Model) View() string {
 		msgHeight = 3
 	}
 
-	header := HeaderView(m.mode, m.cfg.Model, m.width)
+	header := HeaderView(m.mode, m.cfg.Model, m.tokenTotal, m.width)
 	msgs := m.msgs.View(m.width, msgHeight)
 
 	// Show confirmation dialog if quitting
@@ -600,7 +600,7 @@ func (m Model) View() string {
 		inputView = m.input.View(m.width, m.mode)
 	}
 
-	status := StatusBarView(m.mode, m.tokenTotal, m.width, m.thinking, m.cfg.Model)
+	status := StatusBarView(m.width, m.thinking)
 
 	return fmt.Sprintf("%s\n%s\n%s\n%s", header, msgs, inputView, status)
 }

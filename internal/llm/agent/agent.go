@@ -275,8 +275,7 @@ func (a *Agent) executeTool(ctx context.Context, tc message.ToolCall, events cha
 
 	// Check mode restrictions
 	if a.mode == "plan" && tool.RequiresPermission() {
-		// In plan mode, block tools that modify files
-		// Exception: bash for read-only commands (we can't really tell, so we block all bash in plan mode for safety)
+		// In plan mode, block tools that modify files (write, edit, bash)
 		return message.ToolResult{
 			ToolCallID: tc.ID,
 			Name:       tc.Name,

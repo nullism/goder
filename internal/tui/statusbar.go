@@ -4,26 +4,13 @@ import (
 	"fmt"
 
 	"github.com/charmbracelet/lipgloss"
-	"golang.org/x/text/language"
-	"golang.org/x/text/message"
 )
 
 // StatusBarView renders the bottom status bar.
-func StatusBarView(mode Mode, tokenTotal int, width int, thinking bool, model string) string {
+func StatusBarView(width int, thinking bool) string {
 	sep := statusSepStyle.Render(" | ")
-	printer := message.NewPrinter(language.English)
 
-	modeStr := "plan"
-	if mode == BuildMode {
-		modeStr = "build"
-	}
-
-	items := []string{
-		fmt.Sprintf("%s %s", statusKeyStyle.Render("mode:"), statusDescStyle.Render(modeStr)),
-		fmt.Sprintf("%s %s", statusKeyStyle.Render("tokens:"), statusDescStyle.Render(printer.Sprintf("%d", tokenTotal))),
-		fmt.Sprintf("%s %s", statusKeyStyle.Render("model:"), statusDescStyle.Render(model)),
-	}
-
+	items := []string{}
 	if thinking {
 		items = append(items, thinkingStatusStyle.Render("thinking..."))
 	}
