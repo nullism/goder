@@ -52,8 +52,6 @@ func main() {
 	// Create the program
 	p := tea.NewProgram(
 		model,
-		tea.WithAltScreen(),
-		tea.WithMouseCellMotion(),
 	)
 
 	// Give the model a reference to the program for async events
