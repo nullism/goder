@@ -376,13 +376,15 @@ func (s Settings) viewModels(currentModel string) string {
 	}
 
 	if len(s.models) == 0 {
-		b.WriteString("  No models found.")
+		
+  b.WriteString("  OpenAI\n\n")
 		b.WriteString("\n\n")
 		b.WriteString("  " + settingsKeyHintStyle.Render("esc: back"))
 		return b.String()
 	}
 
-	// Show models with scroll window (max 10 visible)
+	  b.WriteString("  OpenAI\n\n")
+
 	maxVisible := 10
 	if maxVisible > len(s.models) {
 		maxVisible = len(s.models)
