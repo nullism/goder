@@ -155,7 +155,12 @@ type respOutputItem struct {
 type respResponseBody struct {
 	ID     string `json:"id"`
 	Status string `json:"status"`
-	Error  *struct {
+	Usage  *struct {
+		InputTokens  int `json:"input_tokens"`
+		OutputTokens int `json:"output_tokens"`
+		TotalTokens  int `json:"total_tokens"`
+	} `json:"usage,omitempty"`
+	Error *struct {
 		Message string `json:"message"`
 		Code    string `json:"code"`
 	} `json:"error,omitempty"`
@@ -447,7 +452,19 @@ func (p *OpenAIProvider) processStream(ctx context.Context, body io.Reader, even
 				}
 				delete(funcCalls, id)
 			}
-			events <- StreamEvent{Type: EventDone}
+
+			usage := Usage{}
+			if len(evt.Response) > 0 {
+				var respBody respResponseBody
+				if err := json.Unmarshal(evt.Response, &respBody); err == nil && respBody.Usage != nil {
+					usage = Usage{
+						InputTokens:  respBody.Usage.InputTokens,
+						OutputTokens: respBody.Usage.OutputTokens,
+						TotalTokens:  respBody.Usage.TotalTokens,
+					}
+				}
+			}
+			events <- StreamEvent{Type: EventDone, Usage: usage}
 			return
 
 		case "response.failed":

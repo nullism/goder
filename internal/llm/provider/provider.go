@@ -20,6 +20,13 @@ const (
 	EventError
 )
 
+// Usage captures token usage for a response.
+type Usage struct {
+	InputTokens  int
+	OutputTokens int
+	TotalTokens  int
+}
+
 // StreamEvent represents a single event in a streaming LLM response.
 type StreamEvent struct {
 	Type StreamEventType
@@ -31,6 +38,9 @@ type StreamEvent struct {
 	ToolCallID    string
 	ToolCallName  string
 	ToolCallInput string // accumulated JSON input (for End events, this is the complete input)
+
+	// For Done events
+	Usage Usage
 
 	// For Error events
 	Error error

@@ -35,13 +35,16 @@ type ToolResult struct {
 
 // Message represents a single message in a conversation.
 type Message struct {
-	ID          string       `json:"id"`
-	SessionID   string       `json:"session_id"`
-	Role        Role         `json:"role"`
-	Content     string       `json:"content"`
-	ToolCalls   []ToolCall   `json:"tool_calls,omitempty"`
-	ToolResults []ToolResult `json:"tool_results,omitempty"`
-	CreatedAt   time.Time    `json:"created_at"`
+	ID           string       `json:"id"`
+	SessionID    string       `json:"session_id"`
+	Role         Role         `json:"role"`
+	Content      string       `json:"content"`
+	ToolCalls    []ToolCall   `json:"tool_calls,omitempty"`
+	ToolResults  []ToolResult `json:"tool_results,omitempty"`
+	InputTokens  int          `json:"input_tokens,omitempty"`
+	OutputTokens int          `json:"output_tokens,omitempty"`
+	TotalTokens  int          `json:"total_tokens,omitempty"`
+	CreatedAt    time.Time    `json:"created_at"`
 }
 
 // IsToolCall returns true if this message contains tool call requests.

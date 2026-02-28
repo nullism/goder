@@ -89,12 +89,12 @@ func (s *Service) GetMessages() ([]message.Message, error) {
 	return s.db.GetMessages(s.currentID)
 }
 
-// GetMessageCount returns the message count for the current session.
-func (s *Service) GetMessageCount() (int, error) {
+// GetTokenTotal returns the total tokens for the current session.
+func (s *Service) GetTokenTotal() (int, error) {
 	if s.currentID == "" {
 		return 0, nil
 	}
-	return s.db.GetMessageCount(s.currentID)
+	return s.db.GetSessionTokenTotal(s.currentID)
 }
 
 // UpdateTitle updates the title of the current session.

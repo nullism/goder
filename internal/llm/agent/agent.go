@@ -151,6 +151,8 @@ func (a *Agent) runLoop(ctx context.Context, history []message.Message, sessionI
 		}
 		pendingCalls := make(map[string]*pendingToolCall)
 
+		var usage provider.Usage
+
 		for event := range streamCh {
 			switch event.Type {
 			case provider.EventTextDelta:
@@ -200,12 +202,16 @@ func (a *Agent) runLoop(ctx context.Context, history []message.Message, sessionI
 				return
 
 			case provider.EventDone:
+				usage = event.Usage
 				// handled below
 			}
 		}
 
 		// Create the assistant message
 		assistantMsg := message.NewAssistantMessage(sessionID, textContent.String(), toolCalls)
+		assistantMsg.InputTokens = usage.InputTokens
+		assistantMsg.OutputTokens = usage.OutputTokens
+		assistantMsg.TotalTokens = usage.TotalTokens
 
 		// Add to history
 		currentHistory = append(currentHistory, assistantMsg)

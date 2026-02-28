@@ -23,6 +23,10 @@ func BuildSystemPrompt(mode string, workDir string, registry *tools.Registry) st
 	sb.WriteString(fmt.Sprintf("- Date: %s\n", time.Now().Format("Mon Jan 2 2006")))
 	sb.WriteString(fmt.Sprintf("- Mode: %s\n", mode))
 	sb.WriteString("\n")
+	sb.WriteString("The working directory is the root of the project you are helping the user with. ")
+	sb.WriteString("All user requests should be interpreted in the context of this directory. ")
+	sb.WriteString("When using tools, default to operating within this directory. ")
+	sb.WriteString("Use relative paths when referring to files in the project.\n\n")
 
 	// Mode-specific instructions
 	if mode == "plan" {
@@ -62,6 +66,7 @@ const corePrompt = `You are goder, an expert AI coding assistant running in a te
 - Verify your changes work when possible (e.g., run tests, check for compilation errors).
 - If you're unsure about something, say so rather than guessing.
 - Use the glob and grep tools to find relevant files before making assumptions about the codebase.
+- Assume the user's requests are about the codebase in the current working directory unless they explicitly indicate otherwise.
 
 # Code Style
 

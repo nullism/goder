@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/webgovernor/goder/internal/message"
@@ -71,6 +72,9 @@ func (db *DB) migrate() error {
 		content      TEXT NOT NULL DEFAULT '',
 		tool_calls   TEXT NOT NULL DEFAULT '[]',
 		tool_results TEXT NOT NULL DEFAULT '[]',
+		input_tokens INTEGER NOT NULL DEFAULT 0,
+		output_tokens INTEGER NOT NULL DEFAULT 0,
+		total_tokens INTEGER NOT NULL DEFAULT 0,
 		created_at   DATETIME NOT NULL DEFAULT (datetime('now')),
 		FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
 	);
@@ -78,7 +82,22 @@ func (db *DB) migrate() error {
 	CREATE INDEX IF NOT EXISTS idx_messages_session_id ON messages(session_id);
 	`
 	_, err := db.conn.Exec(schema)
-	return err
+	if err != nil {
+		return err
+	}
+
+	// Backward-compatible migrations for existing databases.
+	if _, err := db.conn.Exec("ALTER TABLE messages ADD COLUMN input_tokens INTEGER NOT NULL DEFAULT 0"); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+		return err
+	}
+	if _, err := db.conn.Exec("ALTER TABLE messages ADD COLUMN output_tokens INTEGER NOT NULL DEFAULT 0"); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+		return err
+	}
+	if _, err := db.conn.Exec("ALTER TABLE messages ADD COLUMN total_tokens INTEGER NOT NULL DEFAULT 0"); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+		return err
+	}
+
+	return nil
 }
 
 // --- Session operations ---
@@ -174,10 +193,10 @@ func (db *DB) AddMessage(msg message.Message) error {
 	}
 
 	_, err = db.conn.Exec(
-		`INSERT INTO messages (id, session_id, role, content, tool_calls, tool_results, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO messages (id, session_id, role, content, tool_calls, tool_results, input_tokens, output_tokens, total_tokens, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		msg.ID, msg.SessionID, string(msg.Role), msg.Content,
-		string(toolCallsJSON), string(toolResultsJSON), msg.CreatedAt,
+		string(toolCallsJSON), string(toolResultsJSON), msg.InputTokens, msg.OutputTokens, msg.TotalTokens, msg.CreatedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("inserting message: %w", err)
@@ -192,7 +211,7 @@ func (db *DB) AddMessage(msg message.Message) error {
 // GetMessages returns all messages for a session in chronological order.
 func (db *DB) GetMessages(sessionID string) ([]message.Message, error) {
 	rows, err := db.conn.Query(
-		`SELECT id, session_id, role, content, tool_calls, tool_results, created_at
+		`SELECT id, session_id, role, content, tool_calls, tool_results, input_tokens, output_tokens, total_tokens, created_at
 		 FROM messages WHERE session_id = ? ORDER BY created_at ASC`,
 		sessionID,
 	)
@@ -209,7 +228,7 @@ func (db *DB) GetMessages(sessionID string) ([]message.Message, error) {
 
 		if err := rows.Scan(
 			&msg.ID, &msg.SessionID, &role, &msg.Content,
-			&toolCallsJSON, &toolResultsJSON, &msg.CreatedAt,
+			&toolCallsJSON, &toolResultsJSON, &msg.InputTokens, &msg.OutputTokens, &msg.TotalTokens, &msg.CreatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -229,11 +248,11 @@ func (db *DB) GetMessages(sessionID string) ([]message.Message, error) {
 	return messages, rows.Err()
 }
 
-// GetMessageCount returns the number of messages in a session.
-func (db *DB) GetMessageCount(sessionID string) (int, error) {
-	var count int
+// GetSessionTokenTotal returns the total tokens used in a session.
+func (db *DB) GetSessionTokenTotal(sessionID string) (int, error) {
+	var total int
 	err := db.conn.QueryRow(
-		"SELECT COUNT(*) FROM messages WHERE session_id = ?", sessionID,
-	).Scan(&count)
-	return count, err
+		"SELECT COALESCE(SUM(total_tokens), 0) FROM messages WHERE session_id = ?", sessionID,
+	).Scan(&total)
+	return total, err
 }

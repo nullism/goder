@@ -73,6 +73,9 @@ type Model struct {
 	prov     provider.Provider
 	permSvc  *permission.Service
 
+	// Session usage state
+	tokenTotal int
+
 	// Agent state
 	agentCancel context.CancelFunc
 	thinking    bool                // true while agent is processing
@@ -187,6 +190,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.msgs.LoadFromMessages(messages)
+		total, err := m.sessions.GetTokenTotal()
+		if err != nil {
+			m.err = err
+			return m, nil
+		}
+		m.tokenTotal = total
 		return m, nil
 
 	case permissionRequestMsg:
@@ -390,6 +399,7 @@ func (m Model) handleAgentEvent(event agent.Event) (tea.Model, tea.Cmd) {
 			if err := m.sessions.AddMessage(*event.FinalMessage); err != nil {
 				m.err = err
 			}
+			m.tokenTotal += event.FinalMessage.TotalTokens
 			// Also reset the stream buffer since the assistant turn is complete
 			// and a new LLM call will start after tool results.
 			m.msgs.FinalizeStreaming(event.FinalMessage.Content)
@@ -404,6 +414,7 @@ func (m Model) handleAgentEvent(event agent.Event) (tea.Model, tea.Cmd) {
 			if err := m.sessions.AddMessage(*event.FinalMessage); err != nil {
 				m.err = err
 			}
+			m.tokenTotal += event.FinalMessage.TotalTokens
 			// Finalize the streaming message
 			m.msgs.FinalizeStreaming(event.FinalMessage.Content)
 		}
@@ -589,7 +600,7 @@ func (m Model) View() string {
 		inputView = m.input.View(m.width, m.mode)
 	}
 
-	status := StatusBarView(m.mode, m.msgs.Count(), m.width, m.thinking, m.cfg.Model)
+	status := StatusBarView(m.mode, m.tokenTotal, m.width, m.thinking, m.cfg.Model)
 
 	return fmt.Sprintf("%s\n%s\n%s\n%s", header, msgs, inputView, status)
 }
