@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 )
 
 // Config holds the application configuration.
@@ -28,6 +29,9 @@ type Config struct {
 	// Shell is the shell to use for the bash tool.
 	Shell string `json:"shell,omitempty"`
 
+	// MaxIterations is the maximum number of agent loop iterations before stopping.
+	MaxIterations int `json:"maxIterations"`
+
 	// Debug enables debug logging.
 	Debug bool `json:"debug"`
 
@@ -43,11 +47,12 @@ func DefaultConfig() Config {
 	}
 
 	return Config{
-		Provider:  "openai",
-		Model:     "gpt-4o",
-		MaxTokens: 4096,
-		Shell:     shell,
-		Debug:     false,
+		Provider:      "openai",
+		Model:         "gpt-4o",
+		MaxTokens:     4096,
+		MaxIterations: 25,
+		Shell:         shell,
+		Debug:         false,
 	}
 }
 
@@ -100,6 +105,11 @@ func Load() (Config, error) {
 	}
 	if v := os.Getenv("GODER_SHELL"); v != "" {
 		cfg.Shell = v
+	}
+	if v := os.Getenv("GODER_MAX_ITERATIONS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.MaxIterations = n
+		}
 	}
 
 	// Load API key from provider-specific env var

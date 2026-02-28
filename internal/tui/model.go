@@ -330,12 +330,13 @@ func (m *Model) submitPrompt(prompt string) tea.Cmd {
 	m.agentCancel = cancel
 
 	ag := agent.New(agent.Config{
-		Provider:  m.prov,
-		Registry:  m.registry,
-		PermSvc:   m.permSvc,
-		WorkDir:   m.cfg.WorkDir,
-		Mode:      m.mode.String(),
-		MaxTokens: m.cfg.MaxTokens,
+		Provider:      m.prov,
+		Registry:      m.registry,
+		PermSvc:       m.permSvc,
+		WorkDir:       m.cfg.WorkDir,
+		Mode:          m.mode.String(),
+		MaxTokens:     m.cfg.MaxTokens,
+		MaxIterations: m.cfg.MaxIterations,
 	})
 
 	program := m.progRef.Load()
@@ -507,6 +508,27 @@ func (m Model) handleSettingsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 
+	// Handle max iterations save on enter in max iterations view
+	if m.settings.view == settingsViewMaxIter && msg.String() == "enter" {
+		val := m.settings.MaxIterValue()
+		if val == 0 {
+			return m, cmd
+		}
+
+		// Update config
+		m.cfg.MaxIterations = val
+
+		// Persist to config file
+		if err := config.Save(m.cfg); err != nil {
+			m.settings.SetFeedback(fmt.Sprintf("Save failed: %s", err.Error()), true)
+			return m, cmd
+		}
+
+		m.settings.SetFeedback(fmt.Sprintf("Max iterations set to %d", val), false)
+		m.settings.view = settingsViewMenu
+		return m, cmd
+	}
+
 	return m, cmd
 }
 
@@ -557,7 +579,7 @@ func (m Model) View() string {
 	if m.confirmQuit {
 		inputView = m.renderQuitConfirmDialog()
 	} else if m.settingsOpen {
-		inputView = m.settings.View(m.width, m.cfg.APIKey, m.cfg.Model)
+		inputView = m.settings.View(m.width, m.cfg.APIKey, m.cfg.Model, m.cfg.MaxIterations)
 	} else if m.permReq != nil {
 		inputView = m.renderPermissionDialog()
 	} else if m.thinking {
@@ -570,7 +592,6 @@ func (m Model) View() string {
 
 	return fmt.Sprintf("%s\n%s\n%s\n%s", header, msgs, inputView, status)
 }
-
 
 // handleQuitConfirmKey handles key presses in the quit confirmation dialog.
 func (m Model) handleQuitConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -587,7 +608,6 @@ func (m Model) handleQuitConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	return m, nil
 }
-
 
 // renderQuitConfirmDialog renders the quit confirmation dialog.
 func (m Model) renderQuitConfirmDialog() string {

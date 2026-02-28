@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textinput"
@@ -13,15 +14,19 @@ import (
 type settingsView int
 
 const (
-	settingsViewMenu   settingsView = iota // main menu
-	settingsViewAPIKey                     // API key input
-	settingsViewModels                     // model selection list
+	settingsViewMenu    settingsView = iota // main menu
+	settingsViewAPIKey                      // API key input
+	settingsViewModels                      // model selection list
+	settingsViewMaxIter                     // max iterations input
 )
 
 // Settings holds the state for the settings overlay.
 type Settings struct {
 	view     settingsView
 	apiInput textinput.Model
+
+	// Max iterations input
+	maxIterInput textinput.Model
 
 	// Model selection state
 	models       []string // available models from API
@@ -43,9 +48,15 @@ func NewSettings() Settings {
 	ti.EchoMode = textinput.EchoPassword
 	ti.EchoCharacter = '*'
 
+	mi := textinput.New()
+	mi.Placeholder = "25"
+	mi.CharLimit = 5
+	mi.Width = 10
+
 	return Settings{
-		view:     settingsViewMenu,
-		apiInput: ti,
+		view:         settingsViewMenu,
+		apiInput:     ti,
+		maxIterInput: mi,
 	}
 }
 
@@ -74,6 +85,8 @@ func (s Settings) Update(msg tea.KeyMsg) (Settings, bool, tea.Cmd) {
 		return s.updateAPIKey(msg)
 	case settingsViewModels:
 		return s.updateModels(msg)
+	case settingsViewMaxIter:
+		return s.updateMaxIter(msg)
 	}
 	return s, false, nil
 }
@@ -97,6 +110,12 @@ func (s Settings) updateMenu(msg tea.KeyMsg) (Settings, bool, tea.Cmd) {
 		s.modelsErr = nil
 		s.loadingModel = true
 		return s, false, nil // model fetch is triggered from model.go
+	case "3", "i", "I":
+		s.view = settingsViewMaxIter
+		s.feedback = ""
+		s.maxIterInput.SetValue("")
+		s.maxIterInput.Focus()
+		return s, false, s.maxIterInput.Cursor.BlinkCmd()
 	}
 	return s, false, nil
 }
@@ -172,6 +191,59 @@ func (s Settings) updateModels(msg tea.KeyMsg) (Settings, bool, tea.Cmd) {
 	return s, false, nil
 }
 
+// updateMaxIter handles keys in the max iterations input sub-view.
+func (s Settings) updateMaxIter(msg tea.KeyMsg) (Settings, bool, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		s.view = settingsViewMenu
+		s.maxIterInput.Blur()
+		return s, false, nil
+	case "enter":
+		val := strings.TrimSpace(s.maxIterInput.Value())
+		if val == "" {
+			s.feedback = "Value cannot be empty"
+			s.feedbackErr = true
+			return s, false, nil
+		}
+		n, err := strconv.Atoi(val)
+		if err != nil || n < 1 {
+			s.feedback = "Enter a positive integer"
+			s.feedbackErr = true
+			return s, false, nil
+		}
+		// Signal to model.go to save the value
+		s.maxIterInput.Blur()
+		return s, false, nil // actual save handled by model.go checking for enter
+	}
+
+	// Only allow digit keys in the text input
+	if len(msg.String()) == 1 && msg.String()[0] >= '0' && msg.String()[0] <= '9' {
+		var cmd tea.Cmd
+		s.maxIterInput, cmd = s.maxIterInput.Update(msg)
+		return s, false, cmd
+	}
+
+	// Allow backspace/delete
+	switch msg.Type {
+	case tea.KeyBackspace, tea.KeyDelete:
+		var cmd tea.Cmd
+		s.maxIterInput, cmd = s.maxIterInput.Update(msg)
+		return s, false, cmd
+	}
+
+	return s, false, nil
+}
+
+// MaxIterValue returns the current value in the max iterations input as an int, or 0 if invalid.
+func (s Settings) MaxIterValue() int {
+	val := strings.TrimSpace(s.maxIterInput.Value())
+	n, err := strconv.Atoi(val)
+	if err != nil || n < 1 {
+		return 0
+	}
+	return n
+}
+
 // HandleModelsLoaded processes the modelsLoadedMsg.
 func (s *Settings) HandleModelsLoaded(models []string, err error) {
 	s.loadingModel = false
@@ -203,24 +275,26 @@ func (s Settings) APIKeyValue() string {
 }
 
 // View renders the settings overlay.
-func (s Settings) View(width int, currentKey, currentModel string) string {
+func (s Settings) View(width int, currentKey, currentModel string, currentMaxIter int) string {
 	innerWidth := width - 6 // account for border + padding
 
 	var content string
 	switch s.view {
 	case settingsViewMenu:
-		content = s.viewMenu(currentKey, currentModel)
+		content = s.viewMenu(currentKey, currentModel, currentMaxIter)
 	case settingsViewAPIKey:
 		content = s.viewAPIKey(innerWidth)
 	case settingsViewModels:
 		content = s.viewModels(currentModel)
+	case settingsViewMaxIter:
+		content = s.viewMaxIter(innerWidth, currentMaxIter)
 	}
 
 	return settingsStyle.Width(innerWidth).Render(content)
 }
 
 // viewMenu renders the main settings menu.
-func (s Settings) viewMenu(currentKey, currentModel string) string {
+func (s Settings) viewMenu(currentKey, currentModel string, currentMaxIter int) string {
 	title := settingsTitleStyle.Render("Settings")
 
 	maskedKey := "(not set)"
@@ -236,6 +310,7 @@ func (s Settings) viewMenu(currentKey, currentModel string) string {
 	b.WriteString("  " + title + "\n\n")
 	b.WriteString(fmt.Sprintf("  [1] API Key     %s\n", dimStyle.Render(maskedKey)))
 	b.WriteString(fmt.Sprintf("  [2] Model       %s\n", dimStyle.Render(currentModel)))
+	b.WriteString(fmt.Sprintf("  [3] Max Iters   %s\n", dimStyle.Render(strconv.Itoa(currentMaxIter))))
 
 	if s.feedback != "" {
 		b.WriteString("\n")
@@ -361,6 +436,31 @@ func (s Settings) viewModels(currentModel string) string {
 
 	b.WriteString("\n\n")
 	b.WriteString("  " + settingsKeyHintStyle.Render("up/down: navigate  enter: select  esc: back"))
+
+	return b.String()
+}
+
+// viewMaxIter renders the max iterations input sub-view.
+func (s Settings) viewMaxIter(width int, currentMaxIter int) string {
+	title := settingsTitleStyle.Render("Max Agent Iterations")
+	s.maxIterInput.Width = 10
+
+	var b strings.Builder
+	b.WriteString("  " + title + "\n\n")
+	b.WriteString(fmt.Sprintf("  Current: %s\n\n", dimStyle.Render(strconv.Itoa(currentMaxIter))))
+	b.WriteString("  " + s.maxIterInput.View() + "\n")
+
+	if s.feedback != "" {
+		b.WriteString("\n")
+		if s.feedbackErr {
+			b.WriteString("  " + settingsErrorStyle.Render(s.feedback))
+		} else {
+			b.WriteString("  " + settingsSuccessStyle.Render(s.feedback))
+		}
+	}
+
+	b.WriteString("\n\n")
+	b.WriteString("  " + settingsKeyHintStyle.Render("enter: save  esc: back"))
 
 	return b.String()
 }

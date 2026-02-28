@@ -13,8 +13,8 @@ import (
 	"github.com/webgovernor/goder/internal/tools"
 )
 
-// MaxIterations limits the agent loop to prevent infinite loops.
-const MaxIterations = 25
+// DefaultMaxIterations is the default limit for the agent loop to prevent infinite loops.
+const DefaultMaxIterations = 25
 
 // Event types sent from the agent to the TUI.
 type EventType int
@@ -56,33 +56,40 @@ type Event struct {
 
 // Agent orchestrates the LLM + tool execution loop.
 type Agent struct {
-	provider  provider.Provider
-	registry  *tools.Registry
-	permSvc   *permission.Service
-	workDir   string
-	mode      string
-	maxTokens int
+	provider      provider.Provider
+	registry      *tools.Registry
+	permSvc       *permission.Service
+	workDir       string
+	mode          string
+	maxTokens     int
+	maxIterations int
 }
 
 // Config holds agent construction parameters.
 type Config struct {
-	Provider  provider.Provider
-	Registry  *tools.Registry
-	PermSvc   *permission.Service
-	WorkDir   string
-	Mode      string
-	MaxTokens int
+	Provider      provider.Provider
+	Registry      *tools.Registry
+	PermSvc       *permission.Service
+	WorkDir       string
+	Mode          string
+	MaxTokens     int
+	MaxIterations int
 }
 
 // New creates a new Agent.
 func New(cfg Config) *Agent {
+	maxIter := cfg.MaxIterations
+	if maxIter <= 0 {
+		maxIter = DefaultMaxIterations
+	}
 	return &Agent{
-		provider:  cfg.Provider,
-		registry:  cfg.Registry,
-		permSvc:   cfg.PermSvc,
-		workDir:   cfg.WorkDir,
-		mode:      cfg.Mode,
-		maxTokens: cfg.MaxTokens,
+		provider:      cfg.Provider,
+		registry:      cfg.Registry,
+		permSvc:       cfg.PermSvc,
+		workDir:       cfg.WorkDir,
+		mode:          cfg.Mode,
+		maxTokens:     cfg.MaxTokens,
+		maxIterations: maxIter,
 	}
 }
 
@@ -114,7 +121,7 @@ func (a *Agent) runLoop(ctx context.Context, history []message.Message, sessionI
 	currentHistory := make([]message.Message, len(history))
 	copy(currentHistory, history)
 
-	for iteration := 0; iteration < MaxIterations; iteration++ {
+	for iteration := 0; iteration < a.maxIterations; iteration++ {
 		if ctx.Err() != nil {
 			events <- Event{Type: EventAgentError, Error: ctx.Err()}
 			return
@@ -244,7 +251,7 @@ func (a *Agent) runLoop(ctx context.Context, history []message.Message, sessionI
 
 	events <- Event{
 		Type:  EventAgentError,
-		Error: fmt.Errorf("agent reached maximum iterations (%d)", MaxIterations),
+		Error: fmt.Errorf("agent reached maximum iterations (%d)", a.maxIterations),
 	}
 }
 
