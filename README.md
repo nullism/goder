@@ -3,30 +3,29 @@
 
 # goder
 
+Goder is a fast agentic TUI in a similar class to OpenCode or Claude Code.
+
+Goder is built with Goder (~70% at the time of this writing).
+
 <img width="1965" height="1214" alt="goder screenshot" src="https://github.com/user-attachments/assets/4f6bb677-de1a-4e8c-9e94-dcd6e2fe22e8" />
 
+## Differences with other TUIs
 
-## How to Run goder
+1. Written in Go instead of Javascript.
+2. Does not use a render loop or React in the terminal.
+3. Does not use mouse capture or alt screens.
+   - Last output page is retained in terminal after exiting.
+4. Very fast.
+   - At the time of this writing, uses about 1/3 memory and 1/4th the CPU of others.
+5. Linear and transparent output.
+  - Tool call output is visible.
 
-1. **Ensure Go is Installed:** Make sure you have Go installed (version specified in `go.mod` is 1.25.7).
+## Installation
 
-2. **Set Up Configuration:**
-   - Ensure you have the necessary configuration files in place. Based on `main.go`, a configuration loader is used, suggesting a config file is needed.
+### From source
 
-3. **Build the Application:**
-   - In the terminal, navigate to the project root and run:
-     ```bash
-     go build -o goder ./cmd/goder
-     ```
+1. Install Go 1.24+
+2. Clone this repository
+3. Run `go run ./cmd/goder/main.go`
 
-4. **Run the Application:**
-   - After building, run the application using:
-     ```bash
-     ./goder
-     ```
 
-5. **Additional Dependencies:**
-   - Ensure any dependencies (like environment variables for API keys, especially if using OpenAI) are configured as per your setup needs.
-
-6. **Running:**
-   - Once built, running `./goder` will start the TUI application in your terminal.
