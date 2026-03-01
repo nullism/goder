@@ -54,7 +54,7 @@ func DefaultConfig() Config {
 		Provider:      "openai",
 		Model:         "gpt-4o",
 		MaxTokens:     4096,
-		MaxIterations: 25,
+		MaxIterations: 50,
 		Shell:         shell,
 		Debug:         false,
 	}

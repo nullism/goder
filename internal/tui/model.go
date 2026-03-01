@@ -228,15 +228,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		switch {
 		case key.Matches(msg, m.keys.ScrollUp):
-			if !m.thinking {
-				m.msgs.ScrollUp(scrollAmount)
-			}
+			m.msgs.ScrollUp(scrollAmount)
 			return m, nil
 
 		case key.Matches(msg, m.keys.ScrollDown):
-			if !m.thinking {
-				m.msgs.ScrollDown(scrollAmount)
-			}
+			m.msgs.ScrollDown(scrollAmount)
 			return m, nil
 
 		case key.Matches(msg, m.keys.Quit):

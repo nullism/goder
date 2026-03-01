@@ -110,6 +110,8 @@ func (ml *MessageList) LoadFromMessages(msgs []message.Message) {
 
 // UpdateStreaming updates the currently streaming message, or creates one.
 func (ml *MessageList) UpdateStreaming(content string) {
+	wasAtBottom := ml.offset == 0
+
 	if ml.streaming >= 0 && ml.streaming < len(ml.messages) {
 		ml.messages[ml.streaming].Content = content
 	} else {
@@ -121,7 +123,10 @@ func (ml *MessageList) UpdateStreaming(content string) {
 			IsStreaming: true,
 		})
 	}
-	ml.scrollToBottom()
+
+	if wasAtBottom {
+		ml.scrollToBottom()
+	}
 }
 
 // FinalizeStreaming marks the streaming message as complete.
@@ -135,6 +140,8 @@ func (ml *MessageList) FinalizeStreaming(finalContent string) {
 
 // AddToolCall adds a tool call indicator message.
 func (ml *MessageList) AddToolCall(toolName, input string) {
+	wasAtBottom := ml.offset == 0
+
 	ml.messages = append(ml.messages, DisplayMessage{
 		Role:       message.Assistant,
 		Timestamp:  time.Now(),
@@ -142,7 +149,10 @@ func (ml *MessageList) AddToolCall(toolName, input string) {
 		ToolName:   toolName,
 		ToolInput:  input,
 	})
-	ml.scrollToBottom()
+
+	if wasAtBottom {
+		ml.scrollToBottom()
+	}
 }
 
 // UpdateLastToolCall updates the last tool call message with the final input.
@@ -157,6 +167,8 @@ func (ml *MessageList) UpdateLastToolCall(toolName, input string) {
 
 // AddToolResult adds a tool result message.
 func (ml *MessageList) AddToolResult(toolName, output string, isError bool) {
+	wasAtBottom := ml.offset == 0
+
 	ml.messages = append(ml.messages, DisplayMessage{
 		Role:         message.Tool,
 		Timestamp:    time.Now(),
@@ -165,7 +177,10 @@ func (ml *MessageList) AddToolResult(toolName, output string, isError bool) {
 		ToolOutput:   output,
 		ToolIsError:  isError,
 	})
-	ml.scrollToBottom()
+
+	if wasAtBottom {
+		ml.scrollToBottom()
+	}
 }
 
 func (ml *MessageList) scrollToBottom() {

@@ -14,7 +14,7 @@ The single agent is implemented in `internal/llm/agent/agent.go`. It orchestrate
 2. The agent builds a system prompt (mode-aware) and sends the full conversation history to the LLM provider.
 3. The LLM streams back text and/or tool calls.
 4. If tool calls are present, the agent executes them (with permission checks for destructive operations) and loops back to step 2 with the results appended.
-5. The loop terminates when the LLM responds with no tool calls, or after `maxIterations` (default 25).
+5. The loop terminates when the LLM responds with no tool calls, or after `maxIterations` (default 50).
 
 ### Operating Modes
 
