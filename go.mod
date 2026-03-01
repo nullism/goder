@@ -1,6 +1,6 @@
 module github.com/webgovernor/goder
 
-go 1.25.7
+go 1.25
 
 require (
 	github.com/bmatcuk/doublestar/v4 v4.10.0
