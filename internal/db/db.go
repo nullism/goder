@@ -36,13 +36,13 @@ func New(dbPath string) (*DB, error) {
 
 	// Enable WAL mode for better concurrent performance.
 	if _, err := conn.Exec("PRAGMA journal_mode=WAL"); err != nil {
-		conn.Close()
+		_ = conn.Close()
 		return nil, fmt.Errorf("setting WAL mode: %w", err)
 	}
 
 	db := &DB{conn: conn}
 	if err := db.migrate(); err != nil {
-		conn.Close()
+		_ = conn.Close()
 		return nil, fmt.Errorf("running migrations: %w", err)
 	}
 

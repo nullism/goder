@@ -80,12 +80,6 @@ type modelsLoadedMsg struct {
 	err    error
 }
 
-// settingsAPIKeySavedMsg signals that the API key was saved successfully.
-type settingsAPIKeySavedMsg struct{}
-
-// settingsModelSavedMsg signals that the model was saved successfully.
-type settingsModelSavedMsg struct{ model string }
-
 // Update handles key events in the settings overlay.
 // Returns the updated settings, whether the overlay should close,
 // and any tea.Cmd to execute.
@@ -371,8 +365,8 @@ func (s Settings) viewMenu(currentKey, currentModel string, currentMaxIter int) 
 
 	var b strings.Builder
 	b.WriteString("  " + title + "\n\n")
-	b.WriteString(fmt.Sprintf("  [1] Providers   %s\n", dimStyle.Render(s.selectedProvider)))
-	b.WriteString(fmt.Sprintf("  [2] Max Iters   %s\n", dimStyle.Render(strconv.Itoa(currentMaxIter))))
+	fmt.Fprintf(&b, "  [1] Providers   %s\n", dimStyle.Render(s.selectedProvider))
+	fmt.Fprintf(&b, "  [2] Max Iters   %s\n", dimStyle.Render(strconv.Itoa(currentMaxIter)))
 
 	if s.feedback != "" {
 		b.WriteString("\n")
@@ -430,8 +424,8 @@ func (s Settings) viewProviderMenu(currentKey, currentModel string) string {
 
 	var b strings.Builder
 	b.WriteString("  " + title + "\n\n")
-	b.WriteString(fmt.Sprintf("  [1] API Key     %s\n", dimStyle.Render(masked)))
-	b.WriteString(fmt.Sprintf("  [2] Model       %s\n", dimStyle.Render(currentModel)))
+	fmt.Fprintf(&b, "  [1] API Key     %s\n", dimStyle.Render(masked))
+	fmt.Fprintf(&b, "  [2] Model       %s\n", dimStyle.Render(currentModel))
 	b.WriteString("\n")
 	b.WriteString("  " + settingsKeyHintStyle.Render("esc: back"))
 	return b.String()
@@ -486,13 +480,13 @@ func (s Settings) viewModels(currentModel string) string {
 	}
 
 	if len(s.models) == 0 {
-		b.WriteString(fmt.Sprintf("  No models found for %s\n", titleCase(s.providerForModels)))
+		fmt.Fprintf(&b, "  No models found for %s\n", titleCase(s.providerForModels))
 		b.WriteString("\n\n")
 		b.WriteString("  " + settingsKeyHintStyle.Render("esc: back"))
 		return b.String()
 	}
 
-	b.WriteString(fmt.Sprintf("  %s\n\n", dimStyle.Render(titleCase(s.providerForModels))))
+	fmt.Fprintf(&b, "  %s\n\n", dimStyle.Render(titleCase(s.providerForModels)))
 
 	maxVisible := 10
 	if maxVisible > len(s.models) {
@@ -532,8 +526,8 @@ func (s Settings) viewModels(currentModel string) string {
 	}
 
 	if len(s.models) > maxVisible {
-		b.WriteString(fmt.Sprintf("\n  %s",
-			dimStyle.Render(fmt.Sprintf("showing %d-%d of %d", start+1, end, len(s.models)))))
+		fmt.Fprintf(&b, "\n  %s",
+			dimStyle.Render(fmt.Sprintf("showing %d-%d of %d", start+1, end, len(s.models))))
 	}
 
 	if s.feedback != "" {
@@ -558,7 +552,7 @@ func (s Settings) viewMaxIter(width int, currentMaxIter int) string {
 
 	var b strings.Builder
 	b.WriteString("  " + title + "\n\n")
-	b.WriteString(fmt.Sprintf("  Current: %s\n\n", dimStyle.Render(strconv.Itoa(currentMaxIter))))
+	fmt.Fprintf(&b, "  Current: %s\n\n", dimStyle.Render(strconv.Itoa(currentMaxIter)))
 	b.WriteString("  " + s.maxIterInput.View() + "\n")
 
 	if s.feedback != "" {

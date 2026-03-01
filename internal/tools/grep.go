@@ -122,13 +122,13 @@ func (t *GrepTool) Execute(ctx context.Context, input json.RawMessage) (string, 
 			if re.MatchString(line) {
 				results = append(results, fmt.Sprintf("%s:%d: %s", relPath, lineNum, line))
 				if len(results) >= maxResults {
-					f.Close()
+					_ = f.Close()
 					results = append(results, fmt.Sprintf("\n(truncated at %d results)", maxResults))
 					return strings.Join(results, "\n"), nil
 				}
 			}
 		}
-		f.Close()
+		_ = f.Close()
 	}
 
 	if len(results) == 0 {

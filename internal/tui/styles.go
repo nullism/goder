@@ -10,7 +10,6 @@ var (
 	colorBuild     = lipgloss.Color("#06B6D4") // cyan
 	colorDim       = lipgloss.Color("#6B7280") // gray
 	colorText      = lipgloss.Color("#E5E7EB") // light gray
-	colorBg        = lipgloss.Color("#111827") // dark bg
 	colorBorder    = lipgloss.Color("#374151") // border gray
 	colorError     = lipgloss.Color("#EF4444") // red
 	colorUser      = lipgloss.Color("#60A5FA") // blue
@@ -91,10 +90,6 @@ var (
 				Border(lipgloss.RoundedBorder()).
 				BorderForeground(colorPrimary).
 				Padding(0, 1)
-
-	inputPromptStyle = lipgloss.NewStyle().
-				Foreground(colorPrimary).
-				Bold(true)
 )
 
 // Status bar styles
@@ -122,14 +117,6 @@ var (
 var (
 	dimStyle = lipgloss.NewStyle().
 			Foreground(colorDim)
-
-	errorStyle = lipgloss.NewStyle().
-			Foreground(colorError).
-			Bold(true)
-
-	helpStyle = lipgloss.NewStyle().
-			Foreground(colorDim).
-			Italic(true)
 
 	thinkingStyle = lipgloss.NewStyle().
 			Foreground(colorWarning).

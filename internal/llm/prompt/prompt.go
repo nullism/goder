@@ -40,10 +40,10 @@ func BuildSystemPrompt(mode string, model string, workDir string, registry *tool
 
 	// Environment info
 	sb.WriteString("# Environment\n\n")
-	sb.WriteString(fmt.Sprintf("- Working directory: %s\n", workDir))
-	sb.WriteString(fmt.Sprintf("- Platform: %s/%s\n", runtime.GOOS, runtime.GOARCH))
-	sb.WriteString(fmt.Sprintf("- Date: %s\n", time.Now().Format("Mon Jan 2 2006")))
-	sb.WriteString(fmt.Sprintf("- Mode: %s\n", mode))
+	fmt.Fprintf(&sb, "- Working directory: %s\n", workDir)
+	fmt.Fprintf(&sb, "- Platform: %s/%s\n", runtime.GOOS, runtime.GOARCH)
+	fmt.Fprintf(&sb, "- Date: %s\n", time.Now().Format("Mon Jan 2 2006"))
+	fmt.Fprintf(&sb, "- Mode: %s\n", mode)
 	sb.WriteString("\n")
 	sb.WriteString("The working directory is the root of the project you are helping the user with. ")
 	sb.WriteString("All user requests should be interpreted in the context of this directory. ")
@@ -72,8 +72,8 @@ func BuildSystemPrompt(mode string, model string, workDir string, registry *tool
 	// Available tools
 	sb.WriteString("# Available Tools\n\n")
 	for _, t := range registry.All() {
-		sb.WriteString(fmt.Sprintf("## %s\n", t.Name()))
-		sb.WriteString(fmt.Sprintf("%s\n\n", t.Description()))
+		fmt.Fprintf(&sb, "## %s\n", t.Name())
+		fmt.Fprintf(&sb, "%s\n\n", t.Description())
 	}
 
 	return sb.String()
