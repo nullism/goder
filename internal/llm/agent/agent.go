@@ -258,10 +258,52 @@ func (a *Agent) runLoop(ctx context.Context, history []message.Message, sessionI
 		// Continue the loop - the LLM will see the tool results and respond
 	}
 
-	events <- Event{
-		Type:  EventAgentError,
-		Error: fmt.Errorf("agent reached maximum iterations (%d)", a.maxIterations),
+	// Max iterations reached — make one final LLM call without tools so the
+	// model can produce a summary of what was accomplished and what remains.
+	wrapUpPrompt := systemPrompt + "\n\n" +
+		"IMPORTANT: You have reached the maximum number of iterations (" +
+		fmt.Sprintf("%d", a.maxIterations) +
+		"). You can no longer call tools. Provide a concise summary of what you accomplished " +
+		"and what remains to be done, so the user can continue in a follow-up message."
+
+	req := provider.Request{
+		SystemPrompt: wrapUpPrompt,
+		Messages:     currentHistory,
+		Tools:        nil, // no tools available
+		MaxTokens:    a.maxTokens,
 	}
+
+	streamCh, err := a.provider.SendMessage(ctx, req)
+	if err != nil {
+		events <- Event{
+			Type:  EventAgentError,
+			Error: fmt.Errorf("final summary request failed after max iterations: %w", err),
+		}
+		return
+	}
+
+	var finalText strings.Builder
+	var finalUsage provider.Usage
+
+	for event := range streamCh {
+		switch event.Type {
+		case provider.EventTextDelta:
+			finalText.WriteString(event.Text)
+			events <- Event{Type: EventStreamText, Text: event.Text}
+		case provider.EventError:
+			events <- Event{Type: EventAgentError, Error: event.Error}
+			return
+		case provider.EventDone:
+			finalUsage = event.Usage
+		}
+	}
+
+	finalMsg := message.NewAssistantMessage(sessionID, finalText.String(), nil)
+	finalMsg.InputTokens = finalUsage.InputTokens
+	finalMsg.OutputTokens = finalUsage.OutputTokens
+	finalMsg.TotalTokens = finalUsage.TotalTokens
+
+	events <- Event{Type: EventAgentDone, FinalMessage: &finalMsg}
 }
 
 // executeTool runs a single tool call, handling permissions.

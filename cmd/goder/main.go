@@ -37,12 +37,9 @@ func main() {
 	permSvc := permission.NewService()
 
 	// Initialize LLM provider
-	var prov provider.Provider
-	switch cfg.Provider {
-	case "openai":
-		prov = provider.NewOpenAIProvider(cfg.APIKey, cfg.Model)
-	default:
-		fmt.Fprintf(os.Stderr, "error: unsupported provider %q (supported: openai)\n", cfg.Provider)
+	prov, err := provider.New(cfg.Provider, cfg.APIKeyFor(cfg.Provider), cfg.Model)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
 

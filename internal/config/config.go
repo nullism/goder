@@ -18,7 +18,11 @@ type Config struct {
 	Model string `json:"model"`
 
 	// APIKey is the provider API key. Loaded from environment if not set in config.
+	// Deprecated: use ProviderKeys for per-provider credentials.
 	APIKey string `json:"apiKey,omitempty"`
+
+	// ProviderKeys stores API keys keyed by provider name.
+	ProviderKeys map[string]string `json:"providerKeys,omitempty"`
 
 	// MaxTokens is the maximum number of tokens in the LLM response.
 	MaxTokens int `json:"maxTokens"`
@@ -112,10 +116,17 @@ func Load() (Config, error) {
 		}
 	}
 
-	// Load API key from provider-specific env var
-	if cfg.APIKey == "" {
-		cfg.APIKey = apiKeyFromEnv(cfg.Provider)
+	// Load API key from provider-specific env var / legacy field.
+	if cfg.ProviderKeys == nil {
+		cfg.ProviderKeys = make(map[string]string)
 	}
+	if cfg.APIKey != "" && cfg.ProviderKeys[cfg.Provider] == "" {
+		cfg.ProviderKeys[cfg.Provider] = cfg.APIKey
+	}
+	if cfg.ProviderKeys[cfg.Provider] == "" {
+		cfg.ProviderKeys[cfg.Provider] = apiKeyFromEnv(cfg.Provider)
+	}
+	cfg.APIKey = cfg.ProviderKeys[cfg.Provider]
 
 	// Ensure data directory exists
 	if err := os.MkdirAll(cfg.DataDir, 0o755); err != nil {
@@ -134,6 +145,30 @@ func apiKeyFromEnv(provider string) string {
 		return os.Getenv("ANTHROPIC_API_KEY")
 	default:
 		return os.Getenv("OPENAI_API_KEY")
+	}
+}
+
+// APIKeyFor returns the API key for the given provider.
+func (c Config) APIKeyFor(provider string) string {
+	if c.ProviderKeys != nil {
+		if v := c.ProviderKeys[provider]; v != "" {
+			return v
+		}
+	}
+	if provider == c.Provider {
+		return c.APIKey
+	}
+	return ""
+}
+
+// SetAPIKeyFor sets the API key for the given provider.
+func (c *Config) SetAPIKeyFor(provider, key string) {
+	if c.ProviderKeys == nil {
+		c.ProviderKeys = make(map[string]string)
+	}
+	c.ProviderKeys[provider] = key
+	if provider == c.Provider {
+		c.APIKey = key
 	}
 }
 

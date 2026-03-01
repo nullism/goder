@@ -14,16 +14,24 @@ import (
 type settingsView int
 
 const (
-	settingsViewMenu    settingsView = iota // main menu
-	settingsViewAPIKey                      // API key input
-	settingsViewModels                      // model selection list
-	settingsViewMaxIter                     // max iterations input
+	settingsViewMenu         settingsView = iota // main menu
+	settingsViewProviders                        // providers list
+	settingsViewProviderMenu                     // provider submenu
+	settingsViewAPIKey                           // API key input
+	settingsViewModels                           // model selection list
+	settingsViewMaxIter                          // max iterations input
 )
 
 // Settings holds the state for the settings overlay.
 type Settings struct {
 	view     settingsView
 	apiInput textinput.Model
+
+	// Provider selection state
+	providers         []string
+	providerCursor    int
+	selectedProvider  string
+	providerForModels string // provider context used when entering models view
 
 	// Max iterations input
 	maxIterInput textinput.Model
@@ -40,7 +48,9 @@ type Settings struct {
 }
 
 // NewSettings creates a new settings component.
-func NewSettings() Settings {
+// providers is the list of supported provider identifiers;
+// currentProvider is the one currently active.
+func NewSettings(providers []string, currentProvider string) Settings {
 	ti := textinput.New()
 	ti.Placeholder = "sk-..."
 	ti.CharLimit = 256
@@ -54,9 +64,11 @@ func NewSettings() Settings {
 	mi.Width = 10
 
 	return Settings{
-		view:         settingsViewMenu,
-		apiInput:     ti,
-		maxIterInput: mi,
+		view:             settingsViewMenu,
+		apiInput:         ti,
+		maxIterInput:     mi,
+		providers:        providers,
+		selectedProvider: currentProvider,
 	}
 }
 
@@ -81,6 +93,10 @@ func (s Settings) Update(msg tea.KeyMsg) (Settings, bool, tea.Cmd) {
 	switch s.view {
 	case settingsViewMenu:
 		return s.updateMenu(msg)
+	case settingsViewProviders:
+		return s.updateProviders(msg)
+	case settingsViewProviderMenu:
+		return s.updateProviderMenu(msg)
 	case settingsViewAPIKey:
 		return s.updateAPIKey(msg)
 	case settingsViewModels:
@@ -96,6 +112,53 @@ func (s Settings) updateMenu(msg tea.KeyMsg) (Settings, bool, tea.Cmd) {
 	switch msg.String() {
 	case "esc", "ctrl+k":
 		return s, true, nil // close settings
+	case "1", "p", "P":
+		s.view = settingsViewProviders
+		s.feedback = ""
+		s.providerCursor = 0
+		return s, false, nil
+	case "2", "m", "M":
+		s.view = settingsViewMaxIter
+		s.feedback = ""
+		s.maxIterInput.SetValue("")
+		s.maxIterInput.Focus()
+		return s, false, s.maxIterInput.Cursor.BlinkCmd()
+	}
+	return s, false, nil
+}
+
+func (s Settings) updateProviders(msg tea.KeyMsg) (Settings, bool, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		s.view = settingsViewMenu
+		return s, false, nil
+	case "up", "k":
+		if s.providerCursor > 0 {
+			s.providerCursor--
+		}
+		return s, false, nil
+	case "down", "j":
+		if s.providerCursor < len(s.providers)-1 {
+			s.providerCursor++
+		}
+		return s, false, nil
+	case "enter":
+		if len(s.providers) == 0 {
+			return s, false, nil
+		}
+		s.selectedProvider = s.providers[s.providerCursor]
+		s.view = settingsViewProviderMenu
+		s.feedback = ""
+		return s, false, nil
+	}
+	return s, false, nil
+}
+
+func (s Settings) updateProviderMenu(msg tea.KeyMsg) (Settings, bool, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		s.view = settingsViewProviders
+		return s, false, nil
 	case "1", "a", "A":
 		s.view = settingsViewAPIKey
 		s.feedback = ""
@@ -109,13 +172,8 @@ func (s Settings) updateMenu(msg tea.KeyMsg) (Settings, bool, tea.Cmd) {
 		s.models = nil
 		s.modelsErr = nil
 		s.loadingModel = true
-		return s, false, nil // model fetch is triggered from model.go
-	case "3", "i", "I":
-		s.view = settingsViewMaxIter
-		s.feedback = ""
-		s.maxIterInput.SetValue("")
-		s.maxIterInput.Focus()
-		return s, false, s.maxIterInput.Cursor.BlinkCmd()
+		s.providerForModels = s.selectedProvider
+		return s, false, nil
 	}
 	return s, false, nil
 }
@@ -261,6 +319,16 @@ func (s *Settings) SetFeedback(msg string, isErr bool) {
 	s.feedbackErr = isErr
 }
 
+// SetView updates the active settings sub-view.
+func (s *Settings) SetView(view settingsView) {
+	s.view = view
+}
+
+// SelectedProvider returns the currently selected provider identifier.
+func (s Settings) SelectedProvider() string {
+	return s.selectedProvider
+}
+
 // SelectedModel returns the currently highlighted model ID, or empty if none.
 func (s Settings) SelectedModel() string {
 	if len(s.models) > 0 && s.modelCursor < len(s.models) {
@@ -282,6 +350,10 @@ func (s Settings) View(width int, currentKey, currentModel string, currentMaxIte
 	switch s.view {
 	case settingsViewMenu:
 		content = s.viewMenu(currentKey, currentModel, currentMaxIter)
+	case settingsViewProviders:
+		content = s.viewProviders()
+	case settingsViewProviderMenu:
+		content = s.viewProviderMenu(currentKey, currentModel)
 	case settingsViewAPIKey:
 		content = s.viewAPIKey(innerWidth)
 	case settingsViewModels:
@@ -297,20 +369,10 @@ func (s Settings) View(width int, currentKey, currentModel string, currentMaxIte
 func (s Settings) viewMenu(currentKey, currentModel string, currentMaxIter int) string {
 	title := settingsTitleStyle.Render("Settings")
 
-	maskedKey := "(not set)"
-	if currentKey != "" {
-		if len(currentKey) > 8 {
-			maskedKey = currentKey[:3] + "..." + currentKey[len(currentKey)-4:]
-		} else {
-			maskedKey = "****"
-		}
-	}
-
 	var b strings.Builder
 	b.WriteString("  " + title + "\n\n")
-	b.WriteString(fmt.Sprintf("  [1] API Key     %s\n", dimStyle.Render(maskedKey)))
-	b.WriteString(fmt.Sprintf("  [2] Model       %s\n", dimStyle.Render(currentModel)))
-	b.WriteString(fmt.Sprintf("  [3] Max Iters   %s\n", dimStyle.Render(strconv.Itoa(currentMaxIter))))
+	b.WriteString(fmt.Sprintf("  [1] Providers   %s\n", dimStyle.Render(s.selectedProvider)))
+	b.WriteString(fmt.Sprintf("  [2] Max Iters   %s\n", dimStyle.Render(strconv.Itoa(currentMaxIter))))
 
 	if s.feedback != "" {
 		b.WriteString("\n")
@@ -327,9 +389,57 @@ func (s Settings) viewMenu(currentKey, currentModel string, currentMaxIter int) 
 	return b.String()
 }
 
+func (s Settings) viewProviders() string {
+	title := settingsTitleStyle.Render("Providers")
+
+	var b strings.Builder
+	b.WriteString("  " + title + "\n\n")
+
+	if len(s.providers) == 0 {
+		b.WriteString("  No providers available\n\n")
+		b.WriteString("  " + settingsKeyHintStyle.Render("esc: back"))
+		return b.String()
+	}
+
+	for i, p := range s.providers {
+		cursor := "  "
+		style := settingsItemStyle
+		if i == s.providerCursor {
+			cursor = settingsCursorStyle.Render("> ")
+			style = settingsSelectedStyle
+		}
+		b.WriteString("  " + cursor + style.Render(titleCase(p)) + "\n")
+	}
+
+	b.WriteString("\n")
+	b.WriteString("  " + settingsKeyHintStyle.Render("up/down: navigate  enter: select  esc: back"))
+	return b.String()
+}
+
+func (s Settings) viewProviderMenu(currentKey, currentModel string) string {
+	title := settingsTitleStyle.Render(fmt.Sprintf("Provider: %s", titleCase(s.selectedProvider)))
+
+	masked := "(not set)"
+	if currentKey != "" {
+		if len(currentKey) > 8 {
+			masked = currentKey[:3] + "..." + currentKey[len(currentKey)-4:]
+		} else {
+			masked = "****"
+		}
+	}
+
+	var b strings.Builder
+	b.WriteString("  " + title + "\n\n")
+	b.WriteString(fmt.Sprintf("  [1] API Key     %s\n", dimStyle.Render(masked)))
+	b.WriteString(fmt.Sprintf("  [2] Model       %s\n", dimStyle.Render(currentModel)))
+	b.WriteString("\n")
+	b.WriteString("  " + settingsKeyHintStyle.Render("esc: back"))
+	return b.String()
+}
+
 // viewAPIKey renders the API key input sub-view.
 func (s Settings) viewAPIKey(width int) string {
-	title := settingsTitleStyle.Render("Enter OpenAI API Key")
+	title := settingsTitleStyle.Render(fmt.Sprintf("Enter %s API Key", titleCase(s.selectedProvider)))
 	s.apiInput.Width = width - 4
 	if s.apiInput.Width < 20 {
 		s.apiInput.Width = 20
@@ -376,14 +486,13 @@ func (s Settings) viewModels(currentModel string) string {
 	}
 
 	if len(s.models) == 0 {
-		
-  b.WriteString("  OpenAI\n\n")
+		b.WriteString(fmt.Sprintf("  No models found for %s\n", titleCase(s.providerForModels)))
 		b.WriteString("\n\n")
 		b.WriteString("  " + settingsKeyHintStyle.Render("esc: back"))
 		return b.String()
 	}
 
-	  b.WriteString("  OpenAI\n\n")
+	b.WriteString(fmt.Sprintf("  %s\n\n", dimStyle.Render(titleCase(s.providerForModels))))
 
 	maxVisible := 10
 	if maxVisible > len(s.models) {
@@ -473,4 +582,12 @@ func fetchModelsCmd(ctx context.Context, listFn func(ctx context.Context) ([]str
 		models, err := listFn(ctx)
 		return modelsLoadedMsg{models: models, err: err}
 	}
+}
+
+// titleCase returns s with the first letter uppercased.
+func titleCase(s string) string {
+	if s == "" {
+		return s
+	}
+	return strings.ToUpper(s[:1]) + s[1:]
 }

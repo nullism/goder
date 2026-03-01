@@ -102,7 +102,7 @@ func New(cfg config.Config, database *db.DB, sessions *session.Service, registry
 		keys:     DefaultKeyMap(),
 		input:    NewInput(),
 		msgs:     NewMessageList(),
-		settings: NewSettings(),
+		settings: NewSettings(provider.Supported(), cfg.Provider),
 		cfg:      cfg,
 		database: database,
 		sessions: sessions,
@@ -129,9 +129,9 @@ func (m Model) Init() tea.Cmd {
 	}
 
 	// If no API key is configured, show a helpful message
-	if m.cfg.APIKey == "" {
+	if m.cfg.APIKeyFor(m.cfg.Provider) == "" {
 		m.msgs.Add(message.System,
-			"No API key configured. Press ctrl+k to open settings and enter your OpenAI API key.")
+			fmt.Sprintf("No API key configured for provider %q. Press ctrl+k to open settings.", m.cfg.Provider))
 	}
 
 	return tea.Batch(cmds...)
@@ -255,7 +255,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, m.keys.Settings):
 			if !m.thinking {
 				m.settingsOpen = true
-				m.settings = NewSettings() // reset state
+				m.settings = NewSettings(provider.Supported(), m.cfg.Provider) // reset state
 				m.input.Blur()
 				return m, nil
 			}
@@ -305,9 +305,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // submitPrompt sends a user message and starts the agent loop.
 func (m *Model) submitPrompt(prompt string) tea.Cmd {
 	// Check if API key is configured
-	if m.cfg.APIKey == "" {
+	if m.cfg.APIKeyFor(m.cfg.Provider) == "" {
 		m.msgs.Add(message.System,
-			"No API key configured. Press ctrl+k to open settings and enter your OpenAI API key.")
+			fmt.Sprintf("No API key configured for provider %q. Press ctrl+k to open settings.", m.cfg.Provider))
 		return nil
 	}
 
@@ -484,9 +484,16 @@ func (m Model) handleSettingsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 
-		// Update config and provider
-		m.cfg.APIKey = apiKey
-		m.prov.SetAPIKey(apiKey)
+		selectedProvider := m.settings.SelectedProvider()
+		if selectedProvider == "" {
+			selectedProvider = m.cfg.Provider
+		}
+
+		// Update config and active provider if applicable
+		m.cfg.SetAPIKeyFor(selectedProvider, apiKey)
+		if selectedProvider == m.cfg.Provider {
+			m.prov.SetAPIKey(apiKey)
+		}
 
 		// Persist to config file
 		if err := config.Save(m.cfg); err != nil {
@@ -495,7 +502,7 @@ func (m Model) handleSettingsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 
 		m.settings.SetFeedback("API key saved successfully", false)
-		m.settings.view = settingsViewMenu
+		m.settings.SetView(settingsViewProviderMenu)
 		return m, cmd
 	}
 
@@ -592,7 +599,7 @@ func (m Model) View() string {
 	if m.confirmQuit {
 		inputView = m.renderQuitConfirmDialog()
 	} else if m.settingsOpen {
-		inputView = m.settings.View(m.width, m.cfg.APIKey, m.cfg.Model, m.cfg.MaxIterations)
+		inputView = m.settings.View(m.width, m.cfg.APIKeyFor(m.cfg.Provider), m.cfg.Model, m.cfg.MaxIterations)
 	} else if m.permReq != nil {
 		inputView = m.renderPermissionDialog()
 	} else if m.thinking {
