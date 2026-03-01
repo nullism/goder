@@ -2,7 +2,9 @@
 ![Go Lint](https://github.com/nullism/goder/actions/workflows/lint.yml/badge.svg)
 
 # goder
-A simple Golang TUI for agentic coding.
+
+<img width="1965" height="1214" alt="goder screenshot" src="https://github.com/user-attachments/assets/4f6bb677-de1a-4e8c-9e94-dcd6e2fe22e8" />
+
 
 ## How to Run goder
 
