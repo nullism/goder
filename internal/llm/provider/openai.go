@@ -91,6 +91,14 @@ func (p *OpenAIProvider) ListModels(ctx context.Context) ([]string, error) {
 // isSupportedModel returns true if the model ID looks like a text-generation model
 // supported by the Responses API.
 func isSupportedModel(id string) bool {
+	lowerID := strings.ToLower(id)
+
+	// Filter out obvious media-focused models while keeping broad compatibility
+	// with future text model releases.
+	if strings.Contains(lowerID, "image") || strings.Contains(lowerID, "audio") {
+		return false
+	}
+
 	for _, prefix := range supportedModelPrefixes {
 		if strings.HasPrefix(id, prefix) {
 			return true
