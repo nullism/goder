@@ -1,6 +1,7 @@
 package prompt
 
 import (
+	"embed"
 	"fmt"
 	"runtime"
 	"strings"
@@ -9,11 +10,32 @@ import (
 	"github.com/webgovernor/goder/internal/tools"
 )
 
+//go:embed prompts/*.md
+var promptFS embed.FS
+
+// corePrompt returns the prompt text for the given model, falling back to default.md
+// if no model-specific prompt file exists.
+func corePrompt(model string) string {
+	if model != "" {
+		data, err := promptFS.ReadFile("prompts/" + model + ".md")
+		if err == nil {
+			return string(data)
+		}
+	}
+
+	data, err := promptFS.ReadFile("prompts/default.md")
+	if err != nil {
+		// This should never happen since default.md is embedded at compile time.
+		panic("prompt: embedded default.md not found: " + err.Error())
+	}
+	return string(data)
+}
+
 // BuildSystemPrompt assembles the full system prompt for the coding agent.
-func BuildSystemPrompt(mode string, workDir string, registry *tools.Registry) string {
+func BuildSystemPrompt(mode string, model string, workDir string, registry *tools.Registry) string {
 	var sb strings.Builder
 
-	sb.WriteString(corePrompt)
+	sb.WriteString(corePrompt(model))
 	sb.WriteString("\n\n")
 
 	// Environment info
@@ -33,9 +55,11 @@ func BuildSystemPrompt(mode string, workDir string, registry *tools.Registry) st
 		sb.WriteString("# Mode: PLAN\n\n")
 		sb.WriteString("You are in PLAN mode. You should analyze and reason about the codebase but NOT make any modifications.\n")
 		sb.WriteString("- Do NOT use tools that modify files (write, edit). These tools are not available in this mode.\n")
-		sb.WriteString("- ACTIVELY USE the read-only tools (glob, grep, view, ls, fetch) to explore the codebase and gather context.\n")
+		sb.WriteString("- You MUST use the read-only tools (glob, grep, view, ls) to explore the codebase BEFORE answering any question about it. Do not rely on general knowledge alone.\n")
+		sb.WriteString("- Your responses MUST reference specific files, functions, types, and patterns found in this codebase. Never give generic advice when project-specific guidance is possible.\n")
+		sb.WriteString("- When the user asks how to do something, find existing examples in the codebase first, then base your plan on those concrete patterns.\n")
 		sb.WriteString("- Good planning requires investigation. Before forming a plan, search for relevant files, read their contents, and understand the existing code structure.\n")
-		sb.WriteString("- When the user asks about changes, explore the codebase first, then explain what changes you would make and where.\n")
+		sb.WriteString("- When the user asks about changes, explore the codebase first, then explain what changes you would make and where, referencing specific file paths and line numbers.\n")
 		sb.WriteString("- If the user wants to execute changes, remind them to switch to BUILD mode (ctrl+t).\n\n")
 	} else {
 		sb.WriteString("# Mode: BUILD\n\n")
@@ -54,31 +78,3 @@ func BuildSystemPrompt(mode string, workDir string, registry *tools.Registry) st
 
 	return sb.String()
 }
-
-const corePrompt = `You are goder, an expert AI coding assistant running in a terminal. You help users understand, analyze, and modify codebases.
-
-# Guidelines
-
-- Be concise and direct in your responses.
-- When asked to make changes, use the available tools to implement them.
-- Always read files before editing them to understand the current state.
-- When making edits, preserve existing code style and conventions.
-- If a task requires multiple steps, plan them out before executing.
-- Verify your changes work when possible (e.g., run tests, check for compilation errors).
-- If you're unsure about something, say so rather than guessing.
-- Use the glob and grep tools to find relevant files before making assumptions about the codebase.
-- Assume the user's requests are about the codebase in the current working directory unless they explicitly indicate otherwise.
-- Invariant: All file operations are relative to the current working directory unless the user explicitly provides another path.
-- Assume project root = current working directory for this session.
-
-# Code Style
-
-- Follow the existing conventions in the codebase.
-- Write clean, readable code with appropriate comments.
-- Handle errors properly.
-
-# Safety
-
-- Never execute destructive commands without clear user intent.
-- Be cautious with commands that modify or delete data.
-- Avoid exposing secrets, credentials, or sensitive information.`

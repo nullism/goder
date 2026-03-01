@@ -61,6 +61,7 @@ type Agent struct {
 	permSvc       *permission.Service
 	workDir       string
 	mode          string
+	model         string
 	maxTokens     int
 	maxIterations int
 }
@@ -72,6 +73,7 @@ type Config struct {
 	PermSvc       *permission.Service
 	WorkDir       string
 	Mode          string
+	Model         string
 	MaxTokens     int
 	MaxIterations int
 }
@@ -88,6 +90,7 @@ func New(cfg Config) *Agent {
 		permSvc:       cfg.PermSvc,
 		workDir:       cfg.WorkDir,
 		mode:          cfg.Mode,
+		model:         cfg.Model,
 		maxTokens:     cfg.MaxTokens,
 		maxIterations: maxIter,
 	}
@@ -113,7 +116,7 @@ func (a *Agent) Run(ctx context.Context, history []message.Message, sessionID st
 }
 
 func (a *Agent) runLoop(ctx context.Context, history []message.Message, sessionID string, events chan<- Event) {
-	systemPrompt := prompt.BuildSystemPrompt(a.mode, a.workDir, a.registry)
+	systemPrompt := prompt.BuildSystemPrompt(a.mode, a.model, a.workDir, a.registry)
 
 	// Build tool definitions, filtering by mode
 	toolDefs := a.buildToolDefs()

@@ -345,6 +345,7 @@ func (m *Model) submitPrompt(prompt string) tea.Cmd {
 		PermSvc:       m.permSvc,
 		WorkDir:       m.cfg.WorkDir,
 		Mode:          m.mode.String(),
+		Model:         m.cfg.Model,
 		MaxTokens:     m.cfg.MaxTokens,
 		MaxIterations: m.cfg.MaxIterations,
 	})
