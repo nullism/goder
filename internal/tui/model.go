@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/webgovernor/goder/internal/auth"
 	"github.com/webgovernor/goder/internal/config"
 	"github.com/webgovernor/goder/internal/db"
 	"github.com/webgovernor/goder/internal/llm/agent"
@@ -207,6 +208,51 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case modelsLoadedMsg:
 		m.settings.HandleModelsLoaded(msg.models, msg.err)
+		return m, nil
+
+	case copilotDeviceCodeMsg:
+		m.settings.HandleCopilotDeviceCode(msg.userCode, msg.url, msg.err)
+		if msg.err != nil {
+			return m, nil
+		}
+		// Start polling for the token in the background.
+		// The tea.Cmd runs in its own goroutine, so PollForToken can block
+		// until the user completes the flow (or the context is cancelled).
+		ctx, cancel := context.WithCancel(context.Background())
+		m.settings.SetCopilotCancel(cancel)
+		deviceCode := msg.deviceCode
+		interval := msg.interval
+		return m, func() tea.Msg {
+			token, err := auth.PollForToken(ctx, deviceCode, interval)
+			return copilotAuthMsg{token: token, err: err}
+		}
+
+	case copilotAuthMsg:
+		m.settings.HandleCopilotAuth(msg.token, msg.err)
+		if msg.err != nil {
+			return m, nil
+		}
+		// Save the token and switch to copilot provider.
+		m.cfg.SetAPIKeyFor("copilot", msg.token)
+		m.cfg.Provider = "copilot"
+		m.cfg.Model = "gpt-4o" // default copilot model
+
+		// Create a new copilot provider instance.
+		newProv, err := provider.New("copilot", msg.token, m.cfg.Model)
+		if err != nil {
+			m.settings.SetFeedback(fmt.Sprintf("Provider error: %s", err.Error()), true)
+			return m, nil
+		}
+		m.prov = newProv
+
+		// Persist to config file.
+		if err := config.Save(m.cfg); err != nil {
+			m.settings.SetFeedback(fmt.Sprintf("Save failed: %s", err.Error()), true)
+			return m, nil
+		}
+
+		m.settings.SetFeedback("Copilot authenticated successfully", false)
+		m.settings.SetView(settingsViewProviderMenu)
 		return m, nil
 
 	case tea.KeyMsg:
@@ -466,11 +512,39 @@ func (m Model) handleSettingsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	// Handle transition to model selection (trigger fetch)
 	if prevView != settingsViewModels && m.settings.view == settingsViewModels {
+		selectedProvider := m.settings.SelectedProvider()
+		// If browsing a different provider than the active one, create a
+		// temporary provider instance for listing models.
+		if selectedProvider != "" && selectedProvider != m.prov.Name() {
+			apiKey := m.cfg.APIKeyFor(selectedProvider)
+			tmpProv, err := provider.New(selectedProvider, apiKey, "")
+			if err != nil {
+				m.settings.HandleModelsLoaded(nil, fmt.Errorf("provider error: %s", err.Error()))
+				return m, nil
+			}
+			return m, fetchModelsCmd(context.Background(), tmpProv.ListModels)
+		}
 		if m.prov != nil {
 			return m, fetchModelsCmd(context.Background(), m.prov.ListModels)
 		}
 		m.settings.HandleModelsLoaded(nil, fmt.Errorf("no provider configured (set API key first)"))
 		return m, nil
+	}
+
+	// Handle transition to Copilot auth (trigger device code request)
+	if prevView != settingsViewCopilotAuth && m.settings.view == settingsViewCopilotAuth {
+		return m, func() tea.Msg {
+			dcResp, err := auth.RequestDeviceCode(context.Background())
+			if err != nil {
+				return copilotDeviceCodeMsg{err: err}
+			}
+			return copilotDeviceCodeMsg{
+				userCode:   dcResp.UserCode,
+				url:        dcResp.VerificationURI,
+				deviceCode: dcResp.DeviceCode,
+				interval:   dcResp.Interval,
+			}
+		}
 	}
 
 	// Handle API key save on enter in API key view
@@ -507,6 +581,20 @@ func (m Model) handleSettingsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		selected := m.settings.SelectedModel()
 		if selected == "" {
 			return m, cmd
+		}
+
+		// If the user is selecting a model for a different provider,
+		// switch the active provider.
+		selectedProvider := m.settings.SelectedProvider()
+		if selectedProvider != "" && selectedProvider != m.cfg.Provider {
+			apiKey := m.cfg.APIKeyFor(selectedProvider)
+			newProv, err := provider.New(selectedProvider, apiKey, selected)
+			if err != nil {
+				m.settings.SetFeedback(fmt.Sprintf("Provider error: %s", err.Error()), true)
+				return m, cmd
+			}
+			m.prov = newProv
+			m.cfg.Provider = selectedProvider
 		}
 
 		// Update config and provider

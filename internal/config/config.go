@@ -143,6 +143,8 @@ func apiKeyFromEnv(provider string) string {
 		return os.Getenv("OPENAI_API_KEY")
 	case "anthropic":
 		return os.Getenv("ANTHROPIC_API_KEY")
+	case "copilot":
+		return os.Getenv("GITHUB_TOKEN")
 	default:
 		return os.Getenv("OPENAI_API_KEY")
 	}

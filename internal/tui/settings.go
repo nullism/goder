@@ -20,6 +20,7 @@ const (
 	settingsViewAPIKey                           // API key input
 	settingsViewModels                           // model selection list
 	settingsViewMaxIter                          // max iterations input
+	settingsViewCopilotAuth                      // GitHub Copilot device flow
 )
 
 // Settings holds the state for the settings overlay.
@@ -45,6 +46,13 @@ type Settings struct {
 	// Feedback messages
 	feedback    string // success/error message to show
 	feedbackErr bool   // true if feedback is an error
+
+	// Copilot device flow state
+	copilotUserCode string             // code to display to the user
+	copilotURL      string             // verification URL
+	copilotPolling  bool               // true while polling for authorization
+	copilotCancel   context.CancelFunc // cancels the polling goroutine
+	copilotErr      error              // error from the device flow
 }
 
 // NewSettings creates a new settings component.
@@ -80,6 +88,21 @@ type modelsLoadedMsg struct {
 	err    error
 }
 
+// copilotAuthMsg carries the result of the GitHub Copilot device flow.
+type copilotAuthMsg struct {
+	token string // OAuth access token on success
+	err   error  // error if the flow failed
+}
+
+// copilotDeviceCodeMsg carries the device code info to display to the user.
+type copilotDeviceCodeMsg struct {
+	userCode   string
+	url        string
+	deviceCode string // needed by model.go to start polling
+	interval   int    // poll interval in seconds
+	err        error
+}
+
 // Update handles key events in the settings overlay.
 // Returns the updated settings, whether the overlay should close,
 // and any tea.Cmd to execute.
@@ -97,6 +120,8 @@ func (s Settings) Update(msg tea.KeyMsg) (Settings, bool, tea.Cmd) {
 		return s.updateModels(msg)
 	case settingsViewMaxIter:
 		return s.updateMaxIter(msg)
+	case settingsViewCopilotAuth:
+		return s.updateCopilotAuth(msg)
 	}
 	return s, false, nil
 }
@@ -154,6 +179,16 @@ func (s Settings) updateProviderMenu(msg tea.KeyMsg) (Settings, bool, tea.Cmd) {
 		s.view = settingsViewProviders
 		return s, false, nil
 	case "1", "a", "A":
+		// For copilot, use the device flow instead of a text input.
+		if s.selectedProvider == "copilot" {
+			s.view = settingsViewCopilotAuth
+			s.feedback = ""
+			s.copilotUserCode = ""
+			s.copilotURL = ""
+			s.copilotPolling = false
+			s.copilotErr = nil
+			return s, false, nil // model.go will trigger the device code request
+		}
 		s.view = settingsViewAPIKey
 		s.feedback = ""
 		s.apiInput.SetValue("")
@@ -354,6 +389,8 @@ func (s Settings) View(width int, currentKey, currentModel string, currentMaxIte
 		content = s.viewModels(currentModel)
 	case settingsViewMaxIter:
 		content = s.viewMaxIter(innerWidth, currentMaxIter)
+	case settingsViewCopilotAuth:
+		content = s.viewCopilotAuth()
 	}
 
 	return settingsStyle.Width(innerWidth).Render(content)
@@ -424,7 +461,15 @@ func (s Settings) viewProviderMenu(currentKey, currentModel string) string {
 
 	var b strings.Builder
 	b.WriteString("  " + title + "\n\n")
-	fmt.Fprintf(&b, "  [1] API Key     %s\n", dimStyle.Render(masked))
+	if s.selectedProvider == "copilot" {
+		authLabel := "Authenticate"
+		if currentKey != "" {
+			authLabel = "Re-authenticate"
+		}
+		fmt.Fprintf(&b, "  [1] %s  %s\n", authLabel, dimStyle.Render(masked))
+	} else {
+		fmt.Fprintf(&b, "  [1] API Key     %s\n", dimStyle.Render(masked))
+	}
 	fmt.Fprintf(&b, "  [2] Model       %s\n", dimStyle.Render(currentModel))
 	b.WriteString("\n")
 	b.WriteString("  " + settingsKeyHintStyle.Render("esc: back"))
@@ -566,6 +611,90 @@ func (s Settings) viewMaxIter(width int, currentMaxIter int) string {
 
 	b.WriteString("\n\n")
 	b.WriteString("  " + settingsKeyHintStyle.Render("enter: save  esc: back"))
+
+	return b.String()
+}
+
+// updateCopilotAuth handles keys in the Copilot device flow auth view.
+func (s Settings) updateCopilotAuth(msg tea.KeyMsg) (Settings, bool, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		// Cancel polling if in progress.
+		if s.copilotCancel != nil {
+			s.copilotCancel()
+			s.copilotCancel = nil
+		}
+		s.copilotPolling = false
+		s.copilotErr = nil
+		s.view = settingsViewProviderMenu
+		return s, false, nil
+	}
+	return s, false, nil
+}
+
+// HandleCopilotDeviceCode processes the copilotDeviceCodeMsg.
+func (s *Settings) HandleCopilotDeviceCode(userCode, url string, err error) {
+	if err != nil {
+		s.copilotErr = err
+		s.copilotPolling = false
+		return
+	}
+	s.copilotUserCode = userCode
+	s.copilotURL = url
+	s.copilotPolling = true
+}
+
+// HandleCopilotAuth processes the copilotAuthMsg (token result).
+func (s *Settings) HandleCopilotAuth(token string, err error) {
+	s.copilotPolling = false
+	if s.copilotCancel != nil {
+		s.copilotCancel()
+		s.copilotCancel = nil
+	}
+	if err != nil {
+		s.copilotErr = err
+		return
+	}
+	// Success — model.go handles saving the token.
+}
+
+// SetCopilotCancel stores the cancel function for the polling goroutine.
+func (s *Settings) SetCopilotCancel(cancel context.CancelFunc) {
+	s.copilotCancel = cancel
+}
+
+// viewCopilotAuth renders the GitHub Copilot device flow authentication view.
+func (s Settings) viewCopilotAuth() string {
+	title := settingsTitleStyle.Render("GitHub Copilot Authentication")
+
+	var b strings.Builder
+	b.WriteString("  " + title + "\n\n")
+
+	if s.copilotErr != nil {
+		b.WriteString("  " + settingsErrorStyle.Render(fmt.Sprintf("Error: %s", s.copilotErr.Error())))
+		b.WriteString("\n\n")
+		b.WriteString("  " + settingsKeyHintStyle.Render("esc: back"))
+		return b.String()
+	}
+
+	if s.copilotUserCode == "" {
+		b.WriteString("  Requesting device code...\n")
+		b.WriteString("\n")
+		b.WriteString("  " + settingsKeyHintStyle.Render("esc: cancel"))
+		return b.String()
+	}
+
+	b.WriteString("  1. Open this URL in your browser:\n\n")
+	b.WriteString("     " + settingsSelectedStyle.Render(s.copilotURL) + "\n\n")
+	b.WriteString("  2. Enter this code:\n\n")
+	b.WriteString("     " + settingsTitleStyle.Render(s.copilotUserCode) + "\n\n")
+
+	if s.copilotPolling {
+		b.WriteString("  " + dimStyle.Render("Waiting for authorization...") + "\n")
+	}
+
+	b.WriteString("\n")
+	b.WriteString("  " + settingsKeyHintStyle.Render("esc: cancel"))
 
 	return b.String()
 }
