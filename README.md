@@ -1,5 +1,5 @@
-![Go Tests](https://github.com/nullism/goder/actions/workflows/test.yml/badge.svg)
-![Go Lint](https://github.com/nullism/goder/actions/workflows/lint.yml/badge.svg)
+[![Go Tests](https://github.com/nullism/goder/actions/workflows/test.yml/badge.svg)](https://github.com/nullism/goder/actions/workflows/test.yml)
+[![Go Lint](https://github.com/nullism/goder/actions/workflows/lint.yml/badge.svg)](https://github.com/nullism/goder/actions/workflows/lint.yml)
 
 # goder
 
