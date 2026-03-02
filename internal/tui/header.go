@@ -6,11 +6,13 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"golang.org/x/text/language"
 	"golang.org/x/text/message"
+
+	"github.com/nullism/goder/internal/version"
 )
 
 // HeaderView renders the top header bar showing the logo and persistent status.
 func HeaderView(mode Mode, model string, tokenTotal int, width int) string {
-	logo := logoStyle.Render("goder")
+	logo := logoStyle.Render("goder") + " " + dimStyle.Render(version.Version)
 
 	var modeLabel string
 	switch mode {

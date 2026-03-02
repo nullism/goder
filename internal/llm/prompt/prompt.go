@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/webgovernor/goder/internal/tools"
+	"github.com/nullism/goder/internal/tools"
 )
 
 //go:embed prompts/*.md

@@ -6,11 +6,11 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/webgovernor/goder/internal/llm/prompt"
-	"github.com/webgovernor/goder/internal/llm/provider"
-	"github.com/webgovernor/goder/internal/message"
-	"github.com/webgovernor/goder/internal/permission"
-	"github.com/webgovernor/goder/internal/tools"
+	"github.com/nullism/goder/internal/llm/prompt"
+	"github.com/nullism/goder/internal/llm/provider"
+	"github.com/nullism/goder/internal/message"
+	"github.com/nullism/goder/internal/permission"
+	"github.com/nullism/goder/internal/tools"
 )
 
 // DefaultMaxIterations is the default limit for the agent loop to prevent infinite loops.
@@ -405,34 +405,100 @@ func (a *Agent) buildToolDefs() []provider.ToolDefinition {
 }
 
 // sanitizeHistory ensures the message history is structurally valid for LLM
-// providers. Specifically, it checks that every assistant message containing
-// tool calls is followed by a tool result message with matching tool call IDs.
-// If the history ends with an orphaned assistant message (e.g. due to
-// cancellation), a synthetic tool result message is appended with stub
-// responses so that providers like Anthropic don't reject the request.
+// providers. It scans the entire history (not just the last message) and
+// fixes the following issues:
+//
+//  1. Orphaned assistant messages: An assistant message with tool calls that
+//     is not immediately followed by a tool result message gets a synthetic
+//     stub tool result message inserted after it.
+//
+//  2. Mismatched tool results: A tool result message whose ToolCallIDs don't
+//     match the preceding assistant message's ToolCall IDs is corrected —
+//     orphaned results are dropped, and missing results get stubs.
+//
+//  3. Orphaned tool result messages: A tool result message that is not
+//     preceded by an assistant message with tool calls is removed entirely.
+//
+// This prevents providers like Anthropic from rejecting the request with
+// errors about unexpected tool_use_id in tool_result blocks.
 func sanitizeHistory(history []message.Message) []message.Message {
 	if len(history) == 0 {
 		return history
 	}
 
-	// Find the last message and check if it's an orphaned assistant with tool calls.
-	last := history[len(history)-1]
-	if last.Role != message.Assistant || len(last.ToolCalls) == 0 {
-		return history
+	var sanitized []message.Message
+
+	for i := 0; i < len(history); i++ {
+		msg := history[i]
+
+		switch {
+		case msg.Role == message.Assistant && len(msg.ToolCalls) > 0:
+			// This assistant message has tool calls. Check the next message.
+			sanitized = append(sanitized, msg)
+
+			// Build a set of expected tool call IDs.
+			expectedIDs := make(map[string]message.ToolCall)
+			for _, tc := range msg.ToolCalls {
+				expectedIDs[tc.ID] = tc
+			}
+
+			// Check if the next message is a matching tool result.
+			if i+1 < len(history) && history[i+1].Role == message.Tool {
+				next := history[i+1]
+				i++ // consume the tool result message
+
+				// Filter results to only those matching expected IDs,
+				// and track which expected IDs were satisfied.
+				var validResults []message.ToolResult
+				for _, tr := range next.ToolResults {
+					if _, ok := expectedIDs[tr.ToolCallID]; ok {
+						validResults = append(validResults, tr)
+						delete(expectedIDs, tr.ToolCallID)
+					}
+					// Drop results whose ToolCallID doesn't match any
+					// tool call in the preceding assistant message.
+				}
+
+				// Synthesize stubs for any tool calls that had no result.
+				for _, tc := range msg.ToolCalls {
+					if _, missing := expectedIDs[tc.ID]; missing {
+						validResults = append(validResults, message.ToolResult{
+							ToolCallID: tc.ID,
+							Name:       tc.Name,
+							Output:     "Tool execution was interrupted.",
+							IsError:    true,
+						})
+					}
+				}
+
+				fixedMsg := message.NewToolResultMessage(next.SessionID, validResults)
+				fixedMsg.ID = next.ID
+				fixedMsg.CreatedAt = next.CreatedAt
+				sanitized = append(sanitized, fixedMsg)
+			} else {
+				// No tool result message follows — synthesize one entirely.
+				var results []message.ToolResult
+				for _, tc := range msg.ToolCalls {
+					results = append(results, message.ToolResult{
+						ToolCallID: tc.ID,
+						Name:       tc.Name,
+						Output:     "Tool execution was interrupted.",
+						IsError:    true,
+					})
+				}
+				stubMsg := message.NewToolResultMessage(msg.SessionID, results)
+				sanitized = append(sanitized, stubMsg)
+			}
+
+		case msg.Role == message.Tool:
+			// A tool result message without a preceding assistant message
+			// with tool calls. This is orphaned — drop it.
+			continue
+
+		default:
+			sanitized = append(sanitized, msg)
+		}
 	}
 
-	// The last message is an assistant message with tool calls but no
-	// subsequent tool result message — synthesize one.
-	var results []message.ToolResult
-	for _, tc := range last.ToolCalls {
-		results = append(results, message.ToolResult{
-			ToolCallID: tc.ID,
-			Name:       tc.Name,
-			Output:     "Tool execution was interrupted.",
-			IsError:    true,
-		})
-	}
-
-	stubMsg := message.NewToolResultMessage(last.SessionID, results)
-	return append(history, stubMsg)
+	return sanitized
 }

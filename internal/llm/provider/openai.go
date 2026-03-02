@@ -11,7 +11,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/webgovernor/goder/internal/message"
+	"github.com/nullism/goder/internal/message"
 )
 
 // OpenAIProvider implements the Provider interface for OpenAI's API

@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
-	"github.com/webgovernor/goder/internal/message"
+	"github.com/nullism/goder/internal/message"
 )
 
 // DisplayMessage represents a message as displayed in the TUI.

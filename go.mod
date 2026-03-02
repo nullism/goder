@@ -1,4 +1,4 @@
-module github.com/webgovernor/goder
+module github.com/nullism/goder
 
 go 1.25
 

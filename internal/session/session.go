@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/webgovernor/goder/internal/db"
-	"github.com/webgovernor/goder/internal/message"
+	"github.com/nullism/goder/internal/db"
+	"github.com/nullism/goder/internal/message"
 )
 
 // Service manages conversation sessions.

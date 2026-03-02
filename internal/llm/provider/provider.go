@@ -4,8 +4,8 @@ import (
 	"context"
 	"encoding/json"
 
-	"github.com/webgovernor/goder/internal/message"
-	"github.com/webgovernor/goder/internal/tools"
+	"github.com/nullism/goder/internal/message"
+	"github.com/nullism/goder/internal/tools"
 )
 
 // StreamEventType identifies the type of streaming event.

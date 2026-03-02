@@ -9,15 +9,15 @@ import (
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/webgovernor/goder/internal/auth"
-	"github.com/webgovernor/goder/internal/config"
-	"github.com/webgovernor/goder/internal/db"
-	"github.com/webgovernor/goder/internal/llm/agent"
-	"github.com/webgovernor/goder/internal/llm/provider"
-	"github.com/webgovernor/goder/internal/message"
-	"github.com/webgovernor/goder/internal/permission"
-	"github.com/webgovernor/goder/internal/session"
-	"github.com/webgovernor/goder/internal/tools"
+	"github.com/nullism/goder/internal/auth"
+	"github.com/nullism/goder/internal/config"
+	"github.com/nullism/goder/internal/db"
+	"github.com/nullism/goder/internal/llm/agent"
+	"github.com/nullism/goder/internal/llm/provider"
+	"github.com/nullism/goder/internal/message"
+	"github.com/nullism/goder/internal/permission"
+	"github.com/nullism/goder/internal/session"
+	"github.com/nullism/goder/internal/tools"
 )
 
 // programRef holds a shared reference to the tea.Program.

@@ -6,13 +6,13 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/webgovernor/goder/internal/config"
-	"github.com/webgovernor/goder/internal/db"
-	"github.com/webgovernor/goder/internal/llm/provider"
-	"github.com/webgovernor/goder/internal/permission"
-	"github.com/webgovernor/goder/internal/session"
-	"github.com/webgovernor/goder/internal/tools"
-	"github.com/webgovernor/goder/internal/tui"
+	"github.com/nullism/goder/internal/config"
+	"github.com/nullism/goder/internal/db"
+	"github.com/nullism/goder/internal/llm/provider"
+	"github.com/nullism/goder/internal/permission"
+	"github.com/nullism/goder/internal/session"
+	"github.com/nullism/goder/internal/tools"
+	"github.com/nullism/goder/internal/tui"
 )
 
 func main() {

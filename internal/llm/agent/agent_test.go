@@ -5,9 +5,9 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/webgovernor/goder/internal/llm/provider"
-	"github.com/webgovernor/goder/internal/message"
-	"github.com/webgovernor/goder/internal/tools"
+	"github.com/nullism/goder/internal/llm/provider"
+	"github.com/nullism/goder/internal/message"
+	"github.com/nullism/goder/internal/tools"
 )
 
 // mockProvider implements provider.Provider for testing.

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/webgovernor/goder/internal/message"
+	"github.com/nullism/goder/internal/message"
 
 	_ "github.com/ncruces/go-sqlite3/driver"
 	_ "github.com/ncruces/go-sqlite3/embed"
