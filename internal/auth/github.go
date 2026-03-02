@@ -12,7 +12,9 @@ import (
 )
 
 // GitHubClientID is the OAuth client ID used for the device flow.
-const GitHubClientID = "Iv23liq5hZkN4GvjUvl4"
+// This is the OpenCode OAuth App ID, which is allowlisted by GitHub
+// for full Copilot model access (Claude, Gemini, GPT-5, Codex, etc.).
+const GitHubClientID = "Ov23li8tweQw6odWQebz"
 
 // DeviceCodeResponse contains the information returned by GitHub when
 // requesting a device code for the OAuth device flow.
