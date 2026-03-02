@@ -44,16 +44,33 @@ func (p *CopilotProvider) SetAPIKey(apiKey string) { p.apiKey = apiKey }
 func (p *CopilotProvider) SetModel(model string) { p.model = model }
 
 // fallbackCopilotModels is used when fetching from models.dev fails.
+// This list should be kept in sync with models available via GitHub Copilot.
+// Last updated: March 2026 to include gpt-5.3-codex (GA Feb 2026).
+// Reference: https://docs.github.com/en/copilot/reference/ai-models/supported-models
 var fallbackCopilotModels = []string{
+	"claude-haiku-4.5",
+	"claude-opus-4.5",
 	"claude-opus-4.6",
+	"claude-opus-41",
 	"claude-sonnet-4",
 	"claude-sonnet-4.5",
+	"claude-sonnet-4.6",
 	"gemini-2.5-pro",
+	"gemini-3-flash-preview",
+	"gemini-3-pro-preview",
+	"gemini-3.1-pro-preview",
 	"gpt-4.1",
 	"gpt-4o",
 	"gpt-5",
+	"gpt-5-mini",
+	"gpt-5.1",
 	"gpt-5.1-codex",
+	"gpt-5.1-codex-max",
+	"gpt-5.1-codex-mini",
+	"gpt-5.2",
 	"gpt-5.2-codex",
+	"gpt-5.3-codex",
+	"grok-code-fast-1",
 	"o3-mini",
 	"o4-mini",
 }
