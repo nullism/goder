@@ -124,6 +124,13 @@ func (a *Agent) runLoop(ctx context.Context, history []message.Message, sessionI
 	currentHistory := make([]message.Message, len(history))
 	copy(currentHistory, history)
 
+	// Ensure the loaded history is structurally valid. If a previous run
+	// was cancelled after persisting an assistant message with tool calls
+	// but before persisting the tool results, the history would be invalid
+	// for providers like Anthropic that require every tool_use to have a
+	// corresponding tool_result.
+	currentHistory = sanitizeHistory(currentHistory)
+
 	for iteration := 0; iteration < a.maxIterations; iteration++ {
 		if ctx.Err() != nil {
 			events <- Event{Type: EventAgentError, Error: ctx.Err()}
@@ -225,15 +232,27 @@ func (a *Agent) runLoop(ctx context.Context, history []message.Message, sessionI
 			return
 		}
 
-		// Persist the intermediate assistant message (with tool calls)
-		events <- Event{Type: EventPersistMessage, FinalMessage: &assistantMsg}
-
-		// Execute tool calls
+		// Execute tool calls. We defer persisting the assistant message
+		// until after tool results are ready so that both are persisted
+		// together. This prevents orphaned assistant messages (with tool
+		// calls but no results) if the agent is cancelled mid-execution,
+		// which would cause Anthropic to reject the conversation history.
 		var toolResults []message.ToolResult
-		for _, tc := range toolCalls {
+		cancelled := false
+		for i, tc := range toolCalls {
 			if ctx.Err() != nil {
-				events <- Event{Type: EventAgentError, Error: ctx.Err()}
-				return
+				// Context cancelled — generate stub results for all
+				// remaining tool calls so the history stays valid.
+				for _, remaining := range toolCalls[i:] {
+					toolResults = append(toolResults, message.ToolResult{
+						ToolCallID: remaining.ID,
+						Name:       remaining.Name,
+						Output:     "Tool execution was interrupted.",
+						IsError:    true,
+					})
+				}
+				cancelled = true
+				break
 			}
 
 			result := a.executeTool(ctx, tc, events)
@@ -252,8 +271,15 @@ func (a *Agent) runLoop(ctx context.Context, history []message.Message, sessionI
 		toolResultMsg := message.NewToolResultMessage(sessionID, toolResults)
 		currentHistory = append(currentHistory, toolResultMsg)
 
-		// Persist the tool result message
+		// Persist both the assistant message and tool result message
+		// together so they are never orphaned in the database.
+		events <- Event{Type: EventPersistMessage, FinalMessage: &assistantMsg}
 		events <- Event{Type: EventPersistMessage, FinalMessage: &toolResultMsg}
+
+		if cancelled {
+			events <- Event{Type: EventAgentError, Error: ctx.Err()}
+			return
+		}
 
 		// Continue the loop - the LLM will see the tool results and respond
 	}
@@ -376,4 +402,37 @@ func (a *Agent) buildToolDefs() []provider.ToolDefinition {
 		})
 	}
 	return defs
+}
+
+// sanitizeHistory ensures the message history is structurally valid for LLM
+// providers. Specifically, it checks that every assistant message containing
+// tool calls is followed by a tool result message with matching tool call IDs.
+// If the history ends with an orphaned assistant message (e.g. due to
+// cancellation), a synthetic tool result message is appended with stub
+// responses so that providers like Anthropic don't reject the request.
+func sanitizeHistory(history []message.Message) []message.Message {
+	if len(history) == 0 {
+		return history
+	}
+
+	// Find the last message and check if it's an orphaned assistant with tool calls.
+	last := history[len(history)-1]
+	if last.Role != message.Assistant || len(last.ToolCalls) == 0 {
+		return history
+	}
+
+	// The last message is an assistant message with tool calls but no
+	// subsequent tool result message — synthesize one.
+	var results []message.ToolResult
+	for _, tc := range last.ToolCalls {
+		results = append(results, message.ToolResult{
+			ToolCallID: tc.ID,
+			Name:       tc.Name,
+			Output:     "Tool execution was interrupted.",
+			IsError:    true,
+		})
+	}
+
+	stubMsg := message.NewToolResultMessage(last.SessionID, results)
+	return append(history, stubMsg)
 }
