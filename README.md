@@ -12,13 +12,14 @@ Goder is built with Goder (~70% at the time of this writing).
 
 ## Differences with other TUIs
 
-1. Written in Go instead of Javascript.
-2. Does not use a render loop or React in the terminal.
-3. Does not use mouse capture or alt screens.
+1. Uses **multiple different planning agents** - like a panel of experts.
+2. Written in Go instead of Javascript.
+3. Does not use a render loop or React in the terminal.
+4. Does not use mouse capture or alt screens.
    - Last output page is retained in terminal after exiting.
-4. Very fast.
+5. Very fast.
    - At the time of this writing, uses about 1/3 memory and 1/4th the CPU of others.
-5. Linear and transparent output.
+6. Linear and transparent output.
   - Tool call output is visible.
 
 ## Installation
