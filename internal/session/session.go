@@ -97,6 +97,14 @@ func (s *Service) GetTokenTotal() (int, error) {
 	return s.db.GetSessionTokenTotal(s.currentID)
 }
 
+// GetTokenTotalsByModel returns per-model token totals for the current session.
+func (s *Service) GetTokenTotalsByModel() (map[string]int, error) {
+	if s.currentID == "" {
+		return nil, nil
+	}
+	return s.db.GetSessionTokenTotalsByModel(s.currentID)
+}
+
 // UpdateTitle updates the title of the current session.
 func (s *Service) UpdateTitle(title string) error {
 	if s.currentID == "" {

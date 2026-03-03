@@ -55,13 +55,16 @@ type Model struct {
 	plannerSpecs []planner.PlannerSpec
 
 	// Session usage state
-	tokenTotal int
+	tokenTotal        int
+	tokenTotalByModel map[string]int
 
 	// Agent state
-	agentCancel context.CancelFunc
-	thinking    bool                // true while agent is processing
-	streamBuf   string              // accumulates streaming text (plain string to avoid strings.Builder copy panic)
-	permReq     *permission.Request // pending permission request
+	agentCancel     context.CancelFunc
+	thinking        bool                // true while agent is processing
+	streamBuf       string              // accumulates streaming text (plain string to avoid strings.Builder copy panic)
+	permReq         *permission.Request // pending permission request
+	plannerActive   bool                // true while a planner flow is in progress
+	planSynthesized bool                // true after planners finished; next user msg goes to main agent
 
 	// Settings overlay
 	settings     Settings
@@ -194,6 +197,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.tokenTotal = total
+		byModel, err := m.sessions.GetTokenTotalsByModel()
+		if err != nil {
+			m.err = err
+			return m, nil
+		}
+		m.tokenTotalByModel = byModel
 		return m, nil
 
 	case permissionRequestMsg:
@@ -363,10 +372,14 @@ func (m *Model) submitPrompt(prompt string) tea.Cmd {
 	ctx, cancel := context.WithCancel(context.Background())
 	m.agentCancel = cancel
 
-	// Choose between planner flow and single-agent loop
+	// Choose between planner flow and single-agent loop.
+	// After planners have synthesized a plan, the next user message
+	// (e.g. "go ahead") should go to the main agent for execution,
+	// not back to the planners.
 	var eventCh <-chan agent.Event
 
-	if len(m.plannerSpecs) > 0 {
+	if len(m.plannerSpecs) > 0 && !m.planSynthesized {
+		m.plannerActive = true
 		pl := planner.New(planner.Config{
 			MainProvider:  m.prov,
 			PlannerSpecs:  m.plannerSpecs,
@@ -379,6 +392,7 @@ func (m *Model) submitPrompt(prompt string) tea.Cmd {
 		})
 		eventCh = pl.Run(ctx, history, sessionID)
 	} else {
+		m.plannerActive = false
 		ag := agent.New(agent.Config{
 			Provider:      m.prov,
 			Registry:      m.registry,
@@ -441,6 +455,12 @@ func (m Model) handleAgentEvent(event agent.Event) (tea.Model, tea.Cmd) {
 				m.err = err
 			}
 			m.tokenTotal += event.FinalMessage.TotalTokens
+			if event.FinalMessage.Model != "" {
+				if m.tokenTotalByModel == nil {
+					m.tokenTotalByModel = make(map[string]int)
+				}
+				m.tokenTotalByModel[event.FinalMessage.Model] += event.FinalMessage.TotalTokens
+			}
 			// Also reset the stream buffer since the assistant turn is complete
 			// and a new LLM call will start after tool results.
 			m.msgs.FinalizeStreaming(event.FinalMessage.Content)
@@ -456,10 +476,29 @@ func (m Model) handleAgentEvent(event agent.Event) (tea.Model, tea.Cmd) {
 				m.err = err
 			}
 			m.tokenTotal += event.FinalMessage.TotalTokens
+			if event.FinalMessage.Model != "" {
+				if m.tokenTotalByModel == nil {
+					m.tokenTotalByModel = make(map[string]int)
+				}
+				m.tokenTotalByModel[event.FinalMessage.Model] += event.FinalMessage.TotalTokens
+			}
 			// Finalize the streaming message
 			m.msgs.FinalizeStreaming(event.FinalMessage.Content)
 		}
 		m.streamBuf = ""
+
+		// Track planning state transitions:
+		// - If the planner flow just finished, mark that the plan has been
+		//   synthesized so the next user message goes to the main agent.
+		// - If the main agent just finished executing (after a prior plan),
+		//   reset so the next fresh task dispatches to planners again.
+		if m.plannerActive {
+			m.plannerActive = false
+			m.planSynthesized = true
+		} else {
+			m.planSynthesized = false
+		}
+
 		return m, m.listenForPermissions()
 
 	case agent.EventAgentError:
@@ -803,7 +842,7 @@ func (m Model) View() string {
 		msgHeight = 3
 	}
 
-	header := HeaderView(m.cfg.Model, m.tokenTotal, m.width)
+	header := HeaderView(m.cfg.Model, m.tokenTotal, m.tokenTotalByModel, m.width)
 	msgs := m.msgs.View(m.width, msgHeight)
 
 	// Show confirmation dialog if quitting

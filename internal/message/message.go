@@ -38,6 +38,7 @@ type Message struct {
 	ID           string       `json:"id"`
 	SessionID    string       `json:"session_id"`
 	Role         Role         `json:"role"`
+	Model        string       `json:"model,omitempty"`
 	Content      string       `json:"content"`
 	ToolCalls    []ToolCall   `json:"tool_calls,omitempty"`
 	ToolResults  []ToolResult `json:"tool_results,omitempty"`

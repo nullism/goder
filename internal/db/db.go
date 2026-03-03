@@ -69,6 +69,7 @@ func (db *DB) migrate() error {
 		id           TEXT PRIMARY KEY,
 		session_id   TEXT NOT NULL,
 		role         TEXT NOT NULL,
+		model        TEXT NOT NULL DEFAULT '',
 		content      TEXT NOT NULL DEFAULT '',
 		tool_calls   TEXT NOT NULL DEFAULT '[]',
 		tool_results TEXT NOT NULL DEFAULT '[]',
@@ -94,6 +95,9 @@ func (db *DB) migrate() error {
 		return err
 	}
 	if _, err := db.conn.Exec("ALTER TABLE messages ADD COLUMN total_tokens INTEGER NOT NULL DEFAULT 0"); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+		return err
+	}
+	if _, err := db.conn.Exec("ALTER TABLE messages ADD COLUMN model TEXT NOT NULL DEFAULT ''"); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
 		return err
 	}
 
@@ -193,9 +197,9 @@ func (db *DB) AddMessage(msg message.Message) error {
 	}
 
 	_, err = db.conn.Exec(
-		`INSERT INTO messages (id, session_id, role, content, tool_calls, tool_results, input_tokens, output_tokens, total_tokens, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		msg.ID, msg.SessionID, string(msg.Role), msg.Content,
+		`INSERT INTO messages (id, session_id, role, model, content, tool_calls, tool_results, input_tokens, output_tokens, total_tokens, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		msg.ID, msg.SessionID, string(msg.Role), msg.Model, msg.Content,
 		string(toolCallsJSON), string(toolResultsJSON), msg.InputTokens, msg.OutputTokens, msg.TotalTokens, msg.CreatedAt,
 	)
 	if err != nil {
@@ -211,7 +215,7 @@ func (db *DB) AddMessage(msg message.Message) error {
 // GetMessages returns all messages for a session in chronological order.
 func (db *DB) GetMessages(sessionID string) ([]message.Message, error) {
 	rows, err := db.conn.Query(
-		`SELECT id, session_id, role, content, tool_calls, tool_results, input_tokens, output_tokens, total_tokens, created_at
+		`SELECT id, session_id, role, model, content, tool_calls, tool_results, input_tokens, output_tokens, total_tokens, created_at
 		 FROM messages WHERE session_id = ? ORDER BY created_at ASC`,
 		sessionID,
 	)
@@ -227,7 +231,7 @@ func (db *DB) GetMessages(sessionID string) ([]message.Message, error) {
 		var toolCallsJSON, toolResultsJSON string
 
 		if err := rows.Scan(
-			&msg.ID, &msg.SessionID, &role, &msg.Content,
+			&msg.ID, &msg.SessionID, &role, &msg.Model, &msg.Content,
 			&toolCallsJSON, &toolResultsJSON, &msg.InputTokens, &msg.OutputTokens, &msg.TotalTokens, &msg.CreatedAt,
 		); err != nil {
 			return nil, err
@@ -255,4 +259,30 @@ func (db *DB) GetSessionTokenTotal(sessionID string) (int, error) {
 		"SELECT COALESCE(SUM(total_tokens), 0) FROM messages WHERE session_id = ?", sessionID,
 	).Scan(&total)
 	return total, err
+}
+
+// GetSessionTokenTotalsByModel returns per-model token totals for a session.
+// Messages with an empty model field are grouped under "unknown".
+func (db *DB) GetSessionTokenTotalsByModel(sessionID string) (map[string]int, error) {
+	rows, err := db.conn.Query(
+		`SELECT CASE WHEN model = '' THEN 'unknown' ELSE model END AS m,
+		        COALESCE(SUM(total_tokens), 0)
+		 FROM messages WHERE session_id = ? GROUP BY m`,
+		sessionID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	totals := make(map[string]int)
+	for rows.Next() {
+		var model string
+		var total int
+		if err := rows.Scan(&model, &total); err != nil {
+			return nil, err
+		}
+		totals[model] = total
+	}
+	return totals, rows.Err()
 }

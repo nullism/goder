@@ -135,6 +135,7 @@ func (p *Planner) run(ctx context.Context, history []message.Message, sessionID 
 	// Present the synthesized plan as the final response.
 	// The user can then approve, modify, or reject it in their next message.
 	finalMsg := message.NewAssistantMessage(sessionID, synthText, nil)
+	finalMsg.Model = p.mainModel
 	events <- agent.Event{Type: agent.EventAgentDone, FinalMessage: &finalMsg}
 }
 
@@ -150,14 +151,10 @@ func (p *Planner) dispatchPlanners(ctx context.Context, history []message.Messag
 
 	plannerPrompt := prompt.BuildPlannerPrompt(p.workDir, p.registry)
 
-	// Extract the last user message to use as the task prompt
-	var taskPrompt string
-	for i := len(history) - 1; i >= 0; i-- {
-		if history[i].Role == message.User {
-			taskPrompt = history[i].Content
-			break
-		}
-	}
+	// Build a filtered history with conversational context (user + assistant
+	// text only, no tool calls/results) so planners understand references
+	// to earlier parts of the conversation.
+	contextHistory := filterHistoryForContext(history)
 
 	for i, spec := range p.plannerSpecs {
 		wg.Add(1)
@@ -187,7 +184,7 @@ func (p *Planner) dispatchPlanners(ctx context.Context, history []message.Messag
 				SystemPrompt:  plannerPrompt,
 			})
 
-			planText, err := ag.RunSync(planCtx, taskPrompt, sessionID)
+			planText, err := ag.RunSyncWithHistory(planCtx, contextHistory, sessionID)
 			results[idx] = plannerResult{
 				Model: spec.Model,
 				Plan:  planText,
@@ -230,15 +227,10 @@ func (p *Planner) synthesize(ctx context.Context, history []message.Message, res
 		}
 	}
 
-	// Build synthesis history: original user message + planner outputs
-	var synthHistory []message.Message
-	// Include the last user message from the original history
-	for i := len(history) - 1; i >= 0; i-- {
-		if history[i].Role == message.User {
-			synthHistory = append(synthHistory, history[i])
-			break
-		}
-	}
+	// Build synthesis history: filtered conversation context + planner outputs.
+	// Include the full conversational context (user + assistant text) so the
+	// synthesizer understands what was discussed earlier.
+	synthHistory := filterHistoryForContext(history)
 	// Add the planner outputs as a user message for synthesis
 	synthHistory = append(synthHistory, message.NewUserMessage(sessionID,
 		"Here are the plans from the planning agents. Synthesize them into a unified plan.\n\n"+plansText.String()))
@@ -273,4 +265,39 @@ func (p *Planner) synthesize(ctx context.Context, history []message.Message, res
 	}
 
 	return finalText.String(), nil
+}
+
+// filterHistoryForContext creates a lightweight version of the conversation
+// history suitable for giving planning agents conversational context. It
+// keeps only user and assistant messages with text content, stripping out
+// tool calls, tool results, and tool-role messages. This preserves the
+// conversational flow without the bulk of file contents and command outputs.
+func filterHistoryForContext(history []message.Message) []message.Message {
+	var filtered []message.Message
+	for _, msg := range history {
+		switch msg.Role {
+		case message.User:
+			filtered = append(filtered, message.Message{
+				ID:        msg.ID,
+				SessionID: msg.SessionID,
+				Role:      msg.Role,
+				Content:   msg.Content,
+				CreatedAt: msg.CreatedAt,
+			})
+		case message.Assistant:
+			// Only include assistant messages that have text content
+			// (skip pure tool-call-only messages with no text).
+			if msg.Content != "" {
+				filtered = append(filtered, message.Message{
+					ID:        msg.ID,
+					SessionID: msg.SessionID,
+					Role:      msg.Role,
+					Content:   msg.Content,
+					CreatedAt: msg.CreatedAt,
+				})
+			}
+			// Skip tool-role messages and system messages entirely
+		}
+	}
+	return filtered
 }

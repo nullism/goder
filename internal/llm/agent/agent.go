@@ -126,7 +126,13 @@ func (a *Agent) RunSync(ctx context.Context, taskPrompt string, sessionID string
 	history := []message.Message{
 		message.NewUserMessage(sessionID, taskPrompt),
 	}
+	return a.RunSyncWithHistory(ctx, history, sessionID)
+}
 
+// RunSyncWithHistory is like RunSync but accepts a pre-built message history
+// instead of a single task prompt. This allows callers (e.g. the planner) to
+// pass conversation context to child agents.
+func (a *Agent) RunSyncWithHistory(ctx context.Context, history []message.Message, sessionID string) (string, error) {
 	events := a.Run(ctx, history, sessionID)
 
 	var result strings.Builder
@@ -253,6 +259,7 @@ func (a *Agent) runLoop(ctx context.Context, history []message.Message, sessionI
 
 		// Create the assistant message
 		assistantMsg := message.NewAssistantMessage(sessionID, textContent.String(), toolCalls)
+		assistantMsg.Model = a.model
 		assistantMsg.InputTokens = usage.InputTokens
 		assistantMsg.OutputTokens = usage.OutputTokens
 		assistantMsg.TotalTokens = usage.TotalTokens
@@ -359,6 +366,7 @@ func (a *Agent) runLoop(ctx context.Context, history []message.Message, sessionI
 	}
 
 	finalMsg := message.NewAssistantMessage(sessionID, finalText.String(), nil)
+	finalMsg.Model = a.model
 	finalMsg.InputTokens = finalUsage.InputTokens
 	finalMsg.OutputTokens = finalUsage.OutputTokens
 	finalMsg.TotalTokens = finalUsage.TotalTokens
