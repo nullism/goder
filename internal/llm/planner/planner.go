@@ -24,7 +24,7 @@ type PlannerSpec struct {
 // plannerTimeout is the maximum time a single planning agent can run before
 // being cancelled. This prevents one slow/hung planner from blocking the
 // entire planning flow.
-const plannerTimeout = 2 * time.Minute
+const plannerTimeout = 5 * time.Minute
 
 // plannerResult holds the output from a single planning agent.
 type plannerResult struct {
