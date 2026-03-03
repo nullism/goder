@@ -16,11 +16,12 @@ Goder is built with Goder (~70% at the time of this writing).
 2. Written in Go instead of Javascript.
 3. Does not use a render loop or React in the terminal.
 4. Does not use mouse capture or alt screens.
-   - Last output page is retained in terminal after exiting.
-5. Very fast.
-   - At the time of this writing, uses about 1/3 memory and 1/4th the CPU of others.
-6. Linear and transparent output.
-  - Tool call output is visible.
+    - Last output page is retained in terminal after exiting.
+6. Very fast.
+    - At the time of this writing, uses about 1/3 memory and 1/4th the CPU of others.
+7. Linear and transparent output.
+    - Tool call output is visible.
+
 
 ## Installation
 
