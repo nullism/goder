@@ -7,7 +7,8 @@ Goder is a fast agentic TUI in a similar class to OpenCode or Claude Code.
 
 Goder is built with Goder (~70% at the time of this writing).
 
-<img width="1965" height="1214" alt="goder screenshot" src="https://github.com/user-attachments/assets/4f6bb677-de1a-4e8c-9e94-dcd6e2fe22e8" />
+<img width="2701" height="1506" alt="image" src="https://github.com/user-attachments/assets/40f4460d-67fb-4609-8eea-d5b4d4a1621c" />
+
 
 ## Differences with other TUIs
 
