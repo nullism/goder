@@ -8,6 +8,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/nullism/goder/internal/auth"
 	"github.com/nullism/goder/internal/config"
@@ -521,6 +522,13 @@ func (m Model) handleAgentEvent(event agent.Event) (tea.Model, tea.Cmd) {
 
 	case agent.EventPlannerDone:
 		m.msgs.AddPlannerDone(event.PlannerModel, event.PlannerPlan)
+		if event.PlannerTokens > 0 && event.PlannerModel != "" {
+			m.tokenTotal += event.PlannerTokens
+			if m.tokenTotalByModel == nil {
+				m.tokenTotalByModel = make(map[string]int)
+			}
+			m.tokenTotalByModel[event.PlannerModel] += event.PlannerTokens
+		}
 		return m, nil
 	}
 
@@ -803,13 +811,22 @@ func (m Model) handleSettingsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+// headerHeight returns the rendered height of the header, accounting for the
+// optional per-model token breakdown line.
+func (m Model) headerHeight() int {
+	if len(m.tokenTotalByModel) >= 2 {
+		return 2
+	}
+	return 1
+}
+
 // messageScrollAmount returns the number of lines to scroll for each scroll action.
 func (m Model) messageScrollAmount() int {
 	if m.width == 0 {
 		return 1
 	}
 
-	headerHeight := 1
+	headerHeight := m.headerHeight()
 	inputHeight := m.input.Height()
 	statusHeight := 1
 	separatorLines := 2
@@ -832,8 +849,9 @@ func (m Model) View() string {
 		return "loading..."
 	}
 
-	// Layout: header (1 line) + messages (flexible) + input (dynamic) + status (1 line)
-	headerHeight := 1
+	// Layout: header (dynamic) + messages (flexible) + input (dynamic) + status (1 line)
+	header := HeaderView(m.cfg.Model, m.tokenTotal, m.tokenTotalByModel, m.width)
+	headerHeight := lipgloss.Height(header)
 	inputHeight := m.input.Height()
 	statusHeight := 1
 	separatorLines := 2 // blank lines between sections
@@ -842,7 +860,6 @@ func (m Model) View() string {
 		msgHeight = 3
 	}
 
-	header := HeaderView(m.cfg.Model, m.tokenTotal, m.tokenTotalByModel, m.width)
 	msgs := m.msgs.View(m.width, msgHeight)
 
 	// Show confirmation dialog if quitting

@@ -1,8 +1,10 @@
 package tui
 
 import (
+	"strings"
 	"testing"
 
+	"github.com/charmbracelet/lipgloss"
 	"golang.org/x/text/language"
 	"golang.org/x/text/message"
 )
@@ -82,6 +84,45 @@ func TestHeaderView_NarrowWidth(t *testing.T) {
 	result := HeaderView("gpt-4o", 800, perModel, 20)
 	if result == "" {
 		t.Error("expected non-empty header")
+	}
+}
+
+func TestHeaderView_ShowsPerModelOnSecondLine(t *testing.T) {
+	perModel := map[string]int{
+		"gpt-4o":        1234,
+		"claude-sonnet": 5678,
+	}
+	result := HeaderView("gpt-4o", 6912, perModel, 120)
+
+	// The rendered header should be 2 lines tall.
+	height := lipgloss.Height(result)
+	if height != 2 {
+		t.Errorf("expected header height 2, got %d", height)
+	}
+
+	// The per-model breakdown should be on the second line, not the first.
+	lines := strings.Split(result, "\n")
+	if len(lines) < 2 {
+		t.Fatal("expected at least 2 lines in header")
+	}
+
+	// Second line should contain both model names and counts.
+	secondLine := lines[1]
+	if !containsAll(secondLine, "gpt-4o", "1,234", "claude-sonnet", "5,678") {
+		t.Errorf("second line missing per-model breakdown: %q", secondLine)
+	}
+}
+
+func TestHeaderView_SingleModel_NoSecondLine(t *testing.T) {
+	perModel := map[string]int{
+		"gpt-4o": 1000,
+	}
+	result := HeaderView("gpt-4o", 1000, perModel, 120)
+
+	// Single model — no extra breakdown line needed.
+	height := lipgloss.Height(result)
+	if height != 1 {
+		t.Errorf("expected header height 1 for single model, got %d", height)
 	}
 }
 

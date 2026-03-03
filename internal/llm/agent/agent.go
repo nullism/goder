@@ -57,9 +57,10 @@ type Event struct {
 	PermissionReq *permission.Request
 
 	// For orchestrator events
-	PlanPhase    string // human-readable phase description (EventPlanningPhase)
-	PlannerModel string // which model handled this planner (EventPlannerStart/Done)
-	PlannerPlan  string // completed planner plan text (EventPlannerDone)
+	PlanPhase     string // human-readable phase description (EventPlanningPhase)
+	PlannerModel  string // which model handled this planner (EventPlannerStart/Done)
+	PlannerPlan   string // completed planner plan text (EventPlannerDone)
+	PlannerTokens int    // total tokens consumed by this planner (EventPlannerDone)
 }
 
 // Agent orchestrates the LLM + tool execution loop.
@@ -126,30 +127,38 @@ func (a *Agent) RunSync(ctx context.Context, taskPrompt string, sessionID string
 	history := []message.Message{
 		message.NewUserMessage(sessionID, taskPrompt),
 	}
-	return a.RunSyncWithHistory(ctx, history, sessionID)
+	text, _, err := a.RunSyncWithHistory(ctx, history, sessionID)
+	return text, err
 }
 
 // RunSyncWithHistory is like RunSync but accepts a pre-built message history
 // instead of a single task prompt. This allows callers (e.g. the planner) to
 // pass conversation context to child agents.
-func (a *Agent) RunSyncWithHistory(ctx context.Context, history []message.Message, sessionID string) (string, error) {
+func (a *Agent) RunSyncWithHistory(ctx context.Context, history []message.Message, sessionID string) (string, int, error) {
 	events := a.Run(ctx, history, sessionID)
 
 	var result strings.Builder
+	var totalTokens int
 	for ev := range events {
 		switch ev.Type {
 		case EventStreamText:
 			result.WriteString(ev.Text)
+		case EventPersistMessage:
+			// Accumulate tokens from intermediate iterations (tool-call loops).
+			if ev.FinalMessage != nil {
+				totalTokens += ev.FinalMessage.TotalTokens
+			}
 		case EventAgentDone:
 			if ev.FinalMessage != nil {
-				return ev.FinalMessage.Content, nil
+				totalTokens += ev.FinalMessage.TotalTokens
+				return ev.FinalMessage.Content, totalTokens, nil
 			}
-			return result.String(), nil
+			return result.String(), totalTokens, nil
 		case EventAgentError:
-			return result.String(), ev.Error
+			return result.String(), totalTokens, ev.Error
 		}
 	}
-	return result.String(), nil
+	return result.String(), totalTokens, nil
 }
 
 func (a *Agent) runLoop(ctx context.Context, history []message.Message, sessionID string, events chan<- Event) {

@@ -126,7 +126,7 @@ func (p *Planner) run(ctx context.Context, history []message.Message, sessionID 
 		PlanPhase: "Synthesizing plans into a unified response...",
 	}
 
-	synthText, err := p.synthesize(ctx, history, results, sessionID, events)
+	synthText, synthUsage, err := p.synthesize(ctx, history, results, sessionID, events)
 	if err != nil {
 		events <- agent.Event{Type: agent.EventAgentError, Error: fmt.Errorf("synthesis failed: %w", err)}
 		return
@@ -136,6 +136,9 @@ func (p *Planner) run(ctx context.Context, history []message.Message, sessionID 
 	// The user can then approve, modify, or reject it in their next message.
 	finalMsg := message.NewAssistantMessage(sessionID, synthText, nil)
 	finalMsg.Model = p.mainModel
+	finalMsg.InputTokens = synthUsage.InputTokens
+	finalMsg.OutputTokens = synthUsage.OutputTokens
+	finalMsg.TotalTokens = synthUsage.TotalTokens
 	events <- agent.Event{Type: agent.EventAgentDone, FinalMessage: &finalMsg}
 }
 
@@ -184,7 +187,7 @@ func (p *Planner) dispatchPlanners(ctx context.Context, history []message.Messag
 				SystemPrompt:  plannerPrompt,
 			})
 
-			planText, err := ag.RunSyncWithHistory(planCtx, contextHistory, sessionID)
+			planText, planTokens, err := ag.RunSyncWithHistory(planCtx, contextHistory, sessionID)
 			results[idx] = plannerResult{
 				Model: spec.Model,
 				Plan:  planText,
@@ -193,15 +196,17 @@ func (p *Planner) dispatchPlanners(ctx context.Context, history []message.Messag
 
 			if err != nil {
 				events <- agent.Event{
-					Type:         agent.EventPlannerDone,
-					PlannerModel: spec.Model,
-					PlannerPlan:  fmt.Sprintf("Error: %s", err.Error()),
+					Type:          agent.EventPlannerDone,
+					PlannerModel:  spec.Model,
+					PlannerPlan:   fmt.Sprintf("Error: %s", err.Error()),
+					PlannerTokens: planTokens,
 				}
 			} else {
 				events <- agent.Event{
-					Type:         agent.EventPlannerDone,
-					PlannerModel: spec.Model,
-					PlannerPlan:  planText,
+					Type:          agent.EventPlannerDone,
+					PlannerModel:  spec.Model,
+					PlannerPlan:   planText,
+					PlannerTokens: planTokens,
 				}
 			}
 		}(i, spec)
@@ -214,7 +219,7 @@ func (p *Planner) dispatchPlanners(ctx context.Context, history []message.Messag
 // synthesize makes a final LLM call via the main agent's provider to
 // combine all planning agent plans into a unified response, streaming
 // the result to the TUI.
-func (p *Planner) synthesize(ctx context.Context, history []message.Message, results []plannerResult, sessionID string, events chan<- agent.Event) (string, error) {
+func (p *Planner) synthesize(ctx context.Context, history []message.Message, results []plannerResult, sessionID string, events chan<- agent.Event) (string, provider.Usage, error) {
 	// Build the synthesis input with all planner outputs
 	var plansText strings.Builder
 	plansText.WriteString("# Planning Agent Plans\n\n")
@@ -247,10 +252,11 @@ func (p *Planner) synthesize(ctx context.Context, history []message.Message, res
 
 	streamCh, err := p.mainProvider.SendMessage(ctx, req)
 	if err != nil {
-		return "", fmt.Errorf("synthesis request failed: %w", err)
+		return "", provider.Usage{}, fmt.Errorf("synthesis request failed: %w", err)
 	}
 
 	var finalText strings.Builder
+	var usage provider.Usage
 
 	for event := range streamCh {
 		switch event.Type {
@@ -258,13 +264,13 @@ func (p *Planner) synthesize(ctx context.Context, history []message.Message, res
 			finalText.WriteString(event.Text)
 			events <- agent.Event{Type: agent.EventStreamText, Text: event.Text}
 		case provider.EventError:
-			return finalText.String(), event.Error
+			return finalText.String(), usage, event.Error
 		case provider.EventDone:
-			// Usage tracking handled by the TUI when it persists the message
+			usage = event.Usage
 		}
 	}
 
-	return finalText.String(), nil
+	return finalText.String(), usage, nil
 }
 
 // filterHistoryForContext creates a lightweight version of the conversation

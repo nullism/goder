@@ -12,6 +12,8 @@ import (
 )
 
 // HeaderView renders the top header bar showing the logo and persistent status.
+// When multiple models have been used, a second line is rendered beneath the
+// main header with a per-model token breakdown.
 func HeaderView(model string, tokenTotal int, perModel map[string]int, width int) string {
 	logo := logoStyle.Render("goder") + " " + dimStyle.Render(version.Version)
 
@@ -19,22 +21,27 @@ func HeaderView(model string, tokenTotal int, perModel map[string]int, width int
 	modelLabel := fmt.Sprintf("%s %s", statusKeyStyle.Render("model:"), statusDescStyle.Render(model))
 	tokensLabel := fmt.Sprintf("%s %s", statusKeyStyle.Render("tokens:"), statusDescStyle.Render(printer.Sprintf("%d", tokenTotal)))
 
+	rightMain := fmt.Sprintf("%s  %s", modelLabel, tokensLabel)
+	line1 := composeHeaderLine(logo, rightMain, width)
+
 	// Build per-model breakdown if there's data for more than one model.
 	perModelLabel := formatPerModelTokens(perModel, printer)
-
-	right := fmt.Sprintf("%s  %s", modelLabel, tokensLabel)
 	if perModelLabel != "" {
-		right += "  " + perModelLabel
+		line2 := composeHeaderLine("", perModelLabel, width)
+		return headerStyle.Width(width).Render(line1 + "\n" + line2)
 	}
 
-	left := logo
+	return headerStyle.Width(width).Render(line1)
+}
+
+// composeHeaderLine builds a single header line with left content on the left
+// and right content on the right, padded to the given width.
+func composeHeaderLine(left, right string, width int) string {
 	gap := width - lipgloss.Width(left) - lipgloss.Width(right) - 2
 	if gap < 1 {
 		gap = 1
 	}
-
-	bar := fmt.Sprintf("%s%*s%s", left, gap, "", right)
-	return headerStyle.Width(width).Render(bar)
+	return fmt.Sprintf("%s%*s%s", left, gap, "", right)
 }
 
 // formatPerModelTokens produces a compact per-model breakdown string.
