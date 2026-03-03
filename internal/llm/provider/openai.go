@@ -244,7 +244,7 @@ func (p *OpenAIProvider) SendMessage(ctx context.Context, req Request) (<-chan S
 		go func() {
 			select {
 			case <-ctx.Done():
-				resp.Body.Close()
+				_ = resp.Body.Close()
 			case <-done:
 			}
 		}()

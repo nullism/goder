@@ -17,7 +17,7 @@ func newTestDB(t *testing.T) *DB {
 	if err != nil {
 		t.Fatalf("creating test db: %v", err)
 	}
-	t.Cleanup(func() { database.Close() })
+	t.Cleanup(func() { _ = database.Close() })
 	return database
 }
 
@@ -195,7 +195,7 @@ func TestMigration_AddsModelColumn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first open: %v", err)
 	}
-	db1.Close()
+	_ = db1.Close()
 
 	// Second open should succeed (migration is idempotent).
 	db2, err := New(dbPath)
