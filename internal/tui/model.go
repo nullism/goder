@@ -86,7 +86,7 @@ func New(cfg config.Config, database *db.DB, sessions *session.Service, registry
 		keys:         DefaultKeyMap(),
 		input:        NewInput(),
 		msgs:         NewMessageList(),
-		settings:     NewSettings(provider.Supported(), cfg.Provider),
+		settings:     NewSettings(provider.Supported(), cfg.MainAgentProvider()),
 		cfg:          cfg,
 		database:     database,
 		sessions:     sessions,
@@ -130,10 +130,11 @@ func (m Model) Init() tea.Cmd {
 		m.listenForPermissions(),
 	}
 
-	// If no API key is configured, show a helpful message
-	if m.cfg.APIKeyFor(m.cfg.Provider) == "" {
+	// If no API key is configured for the main agent provider, show a helpful message.
+	mainProvider := m.cfg.MainAgentProvider()
+	if m.cfg.APIKeyFor(mainProvider) == "" {
 		m.msgs.Add(message.System,
-			fmt.Sprintf("No API key configured for provider %q. Press ctrl+k to open settings.", m.cfg.Provider))
+			fmt.Sprintf("No API key configured for provider %q. Press ctrl+k to open settings.", mainProvider))
 	}
 
 	return tea.Batch(cmds...)
@@ -239,18 +240,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			return m, nil
 		}
-		// Save the token and switch to copilot provider.
+		// Save the token for Copilot. Provider settings are connection-only,
+		// so this does not change the selected main agent provider/model.
 		m.cfg.SetAPIKeyFor("copilot", msg.token)
-		m.cfg.Provider = "copilot"
-		m.cfg.Model = "gpt-4o" // default copilot model
-
-		// Create a new copilot provider instance.
-		newProv, err := provider.New("copilot", msg.token, m.cfg.Model)
-		if err != nil {
-			m.settings.SetFeedback(fmt.Sprintf("Provider error: %s", err.Error()), true)
-			return m, nil
+		if m.prov != nil && m.prov.Name() == "copilot" {
+			m.prov.SetAPIKey(msg.token)
 		}
-		m.prov = newProv
 
 		// Persist to config file.
 		if err := config.Save(m.cfg); err != nil {
@@ -304,7 +299,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, m.keys.Settings):
 			if !m.thinking {
 				m.settingsOpen = true
-				m.settings = NewSettings(provider.Supported(), m.cfg.Provider) // reset state
+				m.settings = NewSettings(provider.Supported(), m.cfg.MainAgentProvider()) // reset state
 				m.input.Blur()
 				return m, nil
 			}
@@ -338,10 +333,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // submitPrompt sends a user message and starts the agent loop.
 func (m *Model) submitPrompt(prompt string) tea.Cmd {
-	// Check if API key is configured
-	if m.cfg.APIKeyFor(m.cfg.Provider) == "" {
+	// Check if API key is configured for the main agent provider.
+	mainProvider := m.cfg.MainAgentProvider()
+	if m.cfg.APIKeyFor(mainProvider) == "" {
 		m.msgs.Add(message.System,
-			fmt.Sprintf("No API key configured for provider %q. Press ctrl+k to open settings.", m.cfg.Provider))
+			fmt.Sprintf("No API key configured for provider %q. Press ctrl+k to open settings.", mainProvider))
 		return nil
 	}
 
@@ -399,7 +395,7 @@ func (m *Model) submitPrompt(prompt string) tea.Cmd {
 			Registry:      m.registry,
 			PermSvc:       m.permSvc,
 			WorkDir:       m.cfg.WorkDir,
-			Model:         m.cfg.Model,
+			Model:         m.cfg.MainAgentModel(),
 			MaxTokens:     m.cfg.MaxTokens,
 			MaxIterations: m.cfg.MaxIterations,
 		})
@@ -567,27 +563,6 @@ func (m Model) handleSettingsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.input.Focus()
 	}
 
-	// Handle transition to model selection (trigger fetch)
-	if prevView != settingsViewModels && m.settings.view == settingsViewModels {
-		selectedProvider := m.settings.SelectedProvider()
-		// If browsing a different provider than the active one, create a
-		// temporary provider instance for listing models.
-		if selectedProvider != "" && selectedProvider != m.prov.Name() {
-			apiKey := m.cfg.APIKeyFor(selectedProvider)
-			tmpProv, err := provider.New(selectedProvider, apiKey, "")
-			if err != nil {
-				m.settings.HandleModelsLoaded(nil, fmt.Errorf("provider error: %s", err.Error()))
-				return m, nil
-			}
-			return m, fetchModelsCmd(context.Background(), tmpProv.ListModels)
-		}
-		if m.prov != nil {
-			return m, fetchModelsCmd(context.Background(), m.prov.ListModels)
-		}
-		m.settings.HandleModelsLoaded(nil, fmt.Errorf("no provider configured (set API key first)"))
-		return m, nil
-	}
-
 	// Handle transition to Copilot auth (trigger device code request)
 	if prevView != settingsViewCopilotAuth && m.settings.view == settingsViewCopilotAuth {
 		return m, func() tea.Msg {
@@ -646,12 +621,12 @@ func (m Model) handleSettingsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 		selectedProvider := m.settings.SelectedProvider()
 		if selectedProvider == "" {
-			selectedProvider = m.cfg.Provider
+			selectedProvider = m.cfg.MainAgentProvider()
 		}
 
 		// Update config and active provider if applicable
 		m.cfg.SetAPIKeyFor(selectedProvider, apiKey)
-		if selectedProvider == m.cfg.Provider {
+		if m.prov != nil && selectedProvider == m.prov.Name() {
 			m.prov.SetAPIKey(apiKey)
 		}
 
@@ -663,42 +638,6 @@ func (m Model) handleSettingsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 		m.settings.SetFeedback("API key saved successfully", false)
 		m.settings.SetView(settingsViewProviderMenu)
-		return m, cmd
-	}
-
-	// Handle model selection on enter in model view
-	if m.settings.view == settingsViewModels && msg.String() == "enter" {
-		selected := m.settings.SelectedModel()
-		if selected == "" {
-			return m, cmd
-		}
-
-		// If the user is selecting a model for a different provider,
-		// switch the active provider.
-		selectedProvider := m.settings.SelectedProvider()
-		if selectedProvider != "" && selectedProvider != m.cfg.Provider {
-			apiKey := m.cfg.APIKeyFor(selectedProvider)
-			newProv, err := provider.New(selectedProvider, apiKey, selected)
-			if err != nil {
-				m.settings.SetFeedback(fmt.Sprintf("Provider error: %s", err.Error()), true)
-				return m, cmd
-			}
-			m.prov = newProv
-			m.cfg.Provider = selectedProvider
-		}
-
-		// Update config and provider
-		m.cfg.Model = selected
-		m.prov.SetModel(selected)
-
-		// Persist to config file
-		if err := config.Save(m.cfg); err != nil {
-			m.settings.SetFeedback(fmt.Sprintf("Save failed: %s", err.Error()), true)
-			return m, cmd
-		}
-
-		m.settings.SetFeedback(fmt.Sprintf("Model set to %s", selected), false)
-		m.settings.view = settingsViewMenu
 		return m, cmd
 	}
 
@@ -850,7 +789,7 @@ func (m Model) View() string {
 	}
 
 	// Layout: header (dynamic) + messages (flexible) + input (dynamic) + status (1 line)
-	header := HeaderView(m.cfg.Model, m.tokenTotal, m.tokenTotalByModel, m.width)
+	header := HeaderView(m.cfg.MainAgentModel(), m.tokenTotal, m.tokenTotalByModel, m.width)
 	headerHeight := lipgloss.Height(header)
 	inputHeight := m.input.Height()
 	statusHeight := 1
@@ -872,7 +811,11 @@ func (m Model) View() string {
 		for _, pa := range m.cfg.Agents.Planners {
 			plannerEntries = append(plannerEntries, agentEntry{Provider: pa.Provider, Model: pa.Model})
 		}
-		inputView = m.settings.View(m.width, m.cfg.APIKeyFor(m.cfg.Provider), m.cfg.Model, m.cfg.MaxIterations, mainAgent, plannerEntries)
+		selectedProvider := m.settings.SelectedProvider()
+		if selectedProvider == "" {
+			selectedProvider = m.cfg.MainAgentProvider()
+		}
+		inputView = m.settings.View(m.width, m.cfg.APIKeyFor(selectedProvider), m.cfg.MaxIterations, mainAgent, plannerEntries)
 	} else if m.permReq != nil {
 		inputView = m.renderPermissionDialog()
 	} else if m.thinking {

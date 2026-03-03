@@ -18,7 +18,6 @@ const (
 	settingsViewProviders                           // providers list
 	settingsViewProviderMenu                        // provider submenu
 	settingsViewAPIKey                              // API key input
-	settingsViewModels                              // model selection list
 	settingsViewMaxIter                             // max iterations input
 	settingsViewCopilotAuth                         // GitHub Copilot device flow
 	settingsViewAgents                              // agents menu (main + planners)
@@ -78,8 +77,7 @@ type agentEntry struct {
 type modelSelectFor int
 
 const (
-	modelSelectDefault    modelSelectFor = iota // normal provider→model flow
-	modelSelectAgentMain                        // main agent model
+	modelSelectAgentMain  modelSelectFor = iota // main agent model
 	modelSelectPlannerAdd                       // adding a new planner
 )
 
@@ -144,8 +142,6 @@ func (s Settings) Update(msg tea.KeyMsg) (Settings, bool, tea.Cmd) {
 		return s.updateProviderMenu(msg)
 	case settingsViewAPIKey:
 		return s.updateAPIKey(msg)
-	case settingsViewModels:
-		return s.updateModels(msg)
 	case settingsViewMaxIter:
 		return s.updateMaxIter(msg)
 	case settingsViewCopilotAuth:
@@ -238,15 +234,6 @@ func (s Settings) updateProviderMenu(msg tea.KeyMsg) (Settings, bool, tea.Cmd) {
 		s.apiInput.SetValue("")
 		s.apiInput.Focus()
 		return s, false, s.apiInput.Cursor.BlinkCmd()
-	case "2", "m", "M":
-		s.view = settingsViewModels
-		s.feedback = ""
-		s.modelCursor = 0
-		s.models = nil
-		s.modelsErr = nil
-		s.loadingModel = true
-		s.providerForModels = s.selectedProvider
-		return s, false, nil
 	}
 	return s, false, nil
 }
@@ -274,52 +261,6 @@ func (s Settings) updateAPIKey(msg tea.KeyMsg) (Settings, bool, tea.Cmd) {
 	var cmd tea.Cmd
 	s.apiInput, cmd = s.apiInput.Update(msg)
 	return s, false, cmd
-}
-
-// updateModels handles keys in the model selection sub-view.
-func (s Settings) updateModels(msg tea.KeyMsg) (Settings, bool, tea.Cmd) {
-	if s.loadingModel {
-		// Only allow esc while loading
-		if msg.String() == "esc" {
-			s.view = settingsViewMenu
-			s.loadingModel = false
-			return s, false, nil
-		}
-		return s, false, nil
-	}
-
-	if s.modelsErr != nil {
-		// Only allow esc on error
-		if msg.String() == "esc" {
-			s.view = settingsViewMenu
-			s.modelsErr = nil
-			return s, false, nil
-		}
-		return s, false, nil
-	}
-
-	switch msg.String() {
-	case "esc":
-		s.view = settingsViewMenu
-		return s, false, nil
-	case "up", "k":
-		if s.modelCursor > 0 {
-			s.modelCursor--
-		}
-		return s, false, nil
-	case "down", "j":
-		if s.modelCursor < len(s.models)-1 {
-			s.modelCursor++
-		}
-		return s, false, nil
-	case "enter":
-		if len(s.models) > 0 && s.modelCursor < len(s.models) {
-			// Signal to model.go to save the selected model
-			return s, false, nil // actual save handled by model.go
-		}
-		return s, false, nil
-	}
-	return s, false, nil
 }
 
 // updateMaxIter handles keys in the max iterations input sub-view.
@@ -416,21 +357,19 @@ func (s Settings) APIKeyValue() string {
 }
 
 // View renders the settings overlay.
-func (s Settings) View(width int, currentKey, currentModel string, currentMaxIter int, mainAgent agentEntry, planners []agentEntry) string {
+func (s Settings) View(width int, currentKey string, currentMaxIter int, mainAgent agentEntry, planners []agentEntry) string {
 	innerWidth := width - 6 // account for border + padding
 
 	var content string
 	switch s.view {
 	case settingsViewMenu:
-		content = s.viewMenu(currentKey, currentModel, currentMaxIter, mainAgent, planners)
+		content = s.viewMenu(currentMaxIter, mainAgent, planners)
 	case settingsViewProviders:
 		content = s.viewProviders()
 	case settingsViewProviderMenu:
-		content = s.viewProviderMenu(currentKey, currentModel)
+		content = s.viewProviderMenu(currentKey)
 	case settingsViewAPIKey:
 		content = s.viewAPIKey(innerWidth)
-	case settingsViewModels:
-		content = s.viewModels(currentModel)
 	case settingsViewMaxIter:
 		content = s.viewMaxIter(innerWidth, currentMaxIter)
 	case settingsViewCopilotAuth:
@@ -453,7 +392,7 @@ func (s Settings) View(width int, currentKey, currentModel string, currentMaxIte
 }
 
 // viewMenu renders the main settings menu.
-func (s Settings) viewMenu(currentKey, currentModel string, currentMaxIter int, mainAgent agentEntry, planners []agentEntry) string {
+func (s Settings) viewMenu(currentMaxIter int, mainAgent agentEntry, planners []agentEntry) string {
 	title := settingsTitleStyle.Render("Settings")
 
 	agentSummary := fmt.Sprintf("%s:%s", mainAgent.Provider, mainAgent.Model)
@@ -509,7 +448,7 @@ func (s Settings) viewProviders() string {
 	return b.String()
 }
 
-func (s Settings) viewProviderMenu(currentKey, currentModel string) string {
+func (s Settings) viewProviderMenu(currentKey string) string {
 	title := settingsTitleStyle.Render(fmt.Sprintf("Provider: %s", titleCase(s.selectedProvider)))
 
 	masked := "(not set)"
@@ -532,7 +471,6 @@ func (s Settings) viewProviderMenu(currentKey, currentModel string) string {
 	} else {
 		fmt.Fprintf(&b, "  [1] API Key     %s\n", dimStyle.Render(masked))
 	}
-	fmt.Fprintf(&b, "  [2] Model       %s\n", dimStyle.Render(currentModel))
 	b.WriteString("\n")
 	b.WriteString("  " + settingsKeyHintStyle.Render("esc: back"))
 	return b.String()
@@ -561,93 +499,6 @@ func (s Settings) viewAPIKey(width int) string {
 
 	b.WriteString("\n\n")
 	b.WriteString("  " + settingsKeyHintStyle.Render("enter: save  esc: back"))
-
-	return b.String()
-}
-
-// viewModels renders the model selection list sub-view.
-func (s Settings) viewModels(currentModel string) string {
-	title := settingsTitleStyle.Render("Select Model")
-
-	var b strings.Builder
-	b.WriteString("  " + title + "\n\n")
-
-	if s.loadingModel {
-		b.WriteString("  Loading models...")
-		b.WriteString("\n\n")
-		b.WriteString("  " + settingsKeyHintStyle.Render("esc: back"))
-		return b.String()
-	}
-
-	if s.modelsErr != nil {
-		b.WriteString("  " + settingsErrorStyle.Render(fmt.Sprintf("Error: %s", s.modelsErr.Error())))
-		b.WriteString("\n\n")
-		b.WriteString("  " + settingsKeyHintStyle.Render("esc: back"))
-		return b.String()
-	}
-
-	if len(s.models) == 0 {
-		fmt.Fprintf(&b, "  No models found for %s\n", titleCase(s.providerForModels))
-		b.WriteString("\n\n")
-		b.WriteString("  " + settingsKeyHintStyle.Render("esc: back"))
-		return b.String()
-	}
-
-	fmt.Fprintf(&b, "  %s\n\n", dimStyle.Render(titleCase(s.providerForModels)))
-
-	maxVisible := 10
-	if maxVisible > len(s.models) {
-		maxVisible = len(s.models)
-	}
-
-	// Calculate scroll window
-	start := 0
-	if s.modelCursor >= maxVisible {
-		start = s.modelCursor - maxVisible + 1
-	}
-	end := start + maxVisible
-	if end > len(s.models) {
-		end = len(s.models)
-		start = end - maxVisible
-		if start < 0 {
-			start = 0
-		}
-	}
-
-	for i := start; i < end; i++ {
-		model := s.models[i]
-		cursor := "  "
-		style := settingsItemStyle
-
-		if i == s.modelCursor {
-			cursor = settingsCursorStyle.Render("> ")
-			style = settingsSelectedStyle
-		}
-
-		suffix := ""
-		if model == currentModel {
-			suffix = dimStyle.Render(" (current)")
-		}
-
-		b.WriteString("  " + cursor + style.Render(model) + suffix + "\n")
-	}
-
-	if len(s.models) > maxVisible {
-		fmt.Fprintf(&b, "\n  %s",
-			dimStyle.Render(fmt.Sprintf("showing %d-%d of %d", start+1, end, len(s.models))))
-	}
-
-	if s.feedback != "" {
-		b.WriteString("\n")
-		if s.feedbackErr {
-			b.WriteString("  " + settingsErrorStyle.Render(s.feedback))
-		} else {
-			b.WriteString("  " + settingsSuccessStyle.Render(s.feedback))
-		}
-	}
-
-	b.WriteString("\n\n")
-	b.WriteString("  " + settingsKeyHintStyle.Render("up/down: navigate  enter: select  esc: back"))
 
 	return b.String()
 }
