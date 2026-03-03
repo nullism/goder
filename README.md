@@ -26,6 +26,17 @@ Goder is built with Goder (~70% at the time of this writing).
 
 1. Install Go 1.24+
 2. Clone this repository
-3. Run `go run ./cmd/goder/main.go`
+3. Build the binary:
+   ```bash
+   go build -o goder ./cmd/goder
+   ```
+4. Run it:
+   ```bash
+   ./goder
+   ```
+5. (Optional) Move it into your PATH so it works from anywhere:
+   ```bash
+   mv goder /usr/local/bin/
+   ```
 
 
