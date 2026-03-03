@@ -31,8 +31,17 @@ func corePrompt(model string) string {
 	return string(data)
 }
 
+// namedPrompt returns the prompt text for a named embedded prompt file.
+func namedPrompt(name string) string {
+	data, err := promptFS.ReadFile("prompts/" + name + ".md")
+	if err != nil {
+		panic("prompt: embedded " + name + ".md not found: " + err.Error())
+	}
+	return string(data)
+}
+
 // BuildSystemPrompt assembles the full system prompt for the coding agent.
-func BuildSystemPrompt(mode string, model string, workDir string, registry *tools.Registry) string {
+func BuildSystemPrompt(model string, workDir string, registry *tools.Registry) string {
 	var sb strings.Builder
 
 	sb.WriteString(corePrompt(model))
@@ -43,31 +52,17 @@ func BuildSystemPrompt(mode string, model string, workDir string, registry *tool
 	fmt.Fprintf(&sb, "- Working directory: %s\n", workDir)
 	fmt.Fprintf(&sb, "- Platform: %s/%s\n", runtime.GOOS, runtime.GOARCH)
 	fmt.Fprintf(&sb, "- Date: %s\n", time.Now().Format("Mon Jan 2 2006"))
-	fmt.Fprintf(&sb, "- Mode: %s\n", mode)
 	sb.WriteString("\n")
 	sb.WriteString("The working directory is the root of the project you are helping the user with. ")
 	sb.WriteString("All user requests should be interpreted in the context of this directory. ")
 	sb.WriteString("When using tools, default to operating within this directory. ")
 	sb.WriteString("Use relative paths when referring to files in the project.\n\n")
 
-	// Mode-specific instructions
-	if mode == "plan" {
-		sb.WriteString("# Mode: PLAN\n\n")
-		sb.WriteString("You are in PLAN mode. You should analyze and reason about the codebase but NOT make any modifications.\n")
-		sb.WriteString("- Do NOT use tools that modify files (write, edit). These tools are not available in this mode.\n")
-		sb.WriteString("- You MUST use the read-only tools (glob, grep, view, ls) to explore the codebase BEFORE answering any question about it. Do not rely on general knowledge alone.\n")
-		sb.WriteString("- Your responses MUST reference specific files, functions, types, and patterns found in this codebase. Never give generic advice when project-specific guidance is possible.\n")
-		sb.WriteString("- When the user asks how to do something, find existing examples in the codebase first, then base your plan on those concrete patterns.\n")
-		sb.WriteString("- Good planning requires investigation. Before forming a plan, search for relevant files, read their contents, and understand the existing code structure.\n")
-		sb.WriteString("- When the user asks about changes, explore the codebase first, then explain what changes you would make and where, referencing specific file paths and line numbers.\n")
-		sb.WriteString("- If the user wants to execute changes, remind them to switch to BUILD mode (ctrl+t).\n\n")
-	} else {
-		sb.WriteString("# Mode: BUILD\n\n")
-		sb.WriteString("You are in BUILD mode. You can create, edit, and delete files and run commands.\n")
-		sb.WriteString("- Use the available tools to implement changes.\n")
-		sb.WriteString("- Be careful with destructive operations.\n")
-		sb.WriteString("- Verify your changes compile/work when possible.\n\n")
-	}
+	// Tool usage instructions
+	sb.WriteString("You can create, edit, and delete files and run commands using the available tools.\n")
+	sb.WriteString("- Use the available tools to implement changes.\n")
+	sb.WriteString("- Be careful with destructive operations.\n")
+	sb.WriteString("- Verify your changes compile/work when possible.\n\n")
 
 	// Available tools
 	sb.WriteString("# Available Tools\n\n")
@@ -75,6 +70,56 @@ func BuildSystemPrompt(mode string, model string, workDir string, registry *tool
 		fmt.Fprintf(&sb, "## %s\n", t.Name())
 		fmt.Fprintf(&sb, "%s\n\n", t.Description())
 	}
+
+	return sb.String()
+}
+
+// BuildPlannerPrompt assembles the system prompt for a planning agent.
+// Planning agents explore the codebase independently and produce plans.
+func BuildPlannerPrompt(workDir string, registry *tools.Registry) string {
+	var sb strings.Builder
+
+	sb.WriteString(namedPrompt("planner"))
+	sb.WriteString("\n\n")
+
+	// Environment info
+	sb.WriteString("# Environment\n\n")
+	fmt.Fprintf(&sb, "- Working directory: %s\n", workDir)
+	fmt.Fprintf(&sb, "- Platform: %s/%s\n", runtime.GOOS, runtime.GOARCH)
+	fmt.Fprintf(&sb, "- Date: %s\n", time.Now().Format("Mon Jan 2 2006"))
+	sb.WriteString("\n")
+	sb.WriteString("The working directory is the root of the project. ")
+	sb.WriteString("Use relative paths when referring to files.\n\n")
+
+	// Available tools (read-only only — planners are plan-only)
+	sb.WriteString("# Available Tools\n\n")
+	for _, t := range registry.All() {
+		if t.RequiresPermission() {
+			continue
+		}
+		fmt.Fprintf(&sb, "## %s\n", t.Name())
+		fmt.Fprintf(&sb, "%s\n\n", t.Description())
+	}
+
+	return sb.String()
+}
+
+// BuildSynthesisPrompt assembles the system prompt for the synthesis phase.
+// The main agent uses this when combining plans from multiple planning agents.
+func BuildSynthesisPrompt(workDir string) string {
+	var sb strings.Builder
+
+	sb.WriteString(namedPrompt("synthesizer"))
+	sb.WriteString("\n\n")
+
+	// Environment info
+	sb.WriteString("# Environment\n\n")
+	fmt.Fprintf(&sb, "- Working directory: %s\n", workDir)
+	fmt.Fprintf(&sb, "- Platform: %s/%s\n", runtime.GOOS, runtime.GOARCH)
+	fmt.Fprintf(&sb, "- Date: %s\n", time.Now().Format("Mon Jan 2 2006"))
+	sb.WriteString("\n")
+	sb.WriteString("The working directory is the root of the project. ")
+	sb.WriteString("Use relative paths when referring to files.\n\n")
 
 	return sb.String()
 }

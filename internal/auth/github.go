@@ -43,12 +43,15 @@ type tokenResponse struct {
 	Error       string `json:"error"`
 }
 
+const copilotDeviceScope = "read:user repo"
+
 // RequestDeviceCode initiates the GitHub OAuth device flow and returns
 // the device code response containing the user code and verification URL.
 func RequestDeviceCode(ctx context.Context) (*DeviceCodeResponse, error) {
 	form := url.Values{
 		"client_id": {GitHubClientID},
-		"scope":     {"read:user"},
+		// repo scope is required for copilot_internal token exchange.
+		"scope": {copilotDeviceScope},
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "POST",

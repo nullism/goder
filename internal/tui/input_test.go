@@ -28,7 +28,7 @@ func TestInputSoftWrapGrows(t *testing.T) {
 	input := NewInput()
 	input.SetWidth(totalWidth)
 	// Call View once to render with the correct width.
-	input.View(totalWidth, PlanMode)
+	input.View(totalWidth)
 
 	wrapWidth := input.textArea.Width()
 	if wrapWidth != 18 {
@@ -40,7 +40,7 @@ func TestInputSoftWrapGrows(t *testing.T) {
 	for i := 0; i < wrapWidth+5; i++ {
 		ch := rune('a' + (i % 26))
 		typeChar(&input, ch)
-		input.View(totalWidth, PlanMode)
+		input.View(totalWidth)
 
 		if i+1 >= wrapWidth-1 {
 			val := input.Value()
@@ -63,7 +63,7 @@ func TestInputSoftWrapContentVisible(t *testing.T) {
 
 	input := NewInput()
 	input.SetWidth(totalWidth)
-	input.View(totalWidth, PlanMode)
+	input.View(totalWidth)
 
 	wrapWidth := input.textArea.Width()
 
@@ -73,7 +73,7 @@ func TestInputSoftWrapContentVisible(t *testing.T) {
 		typeChar(&input, ch)
 	}
 
-	rendered := input.View(totalWidth, PlanMode)
+	rendered := input.View(totalWidth)
 
 	if !strings.Contains(rendered, "xxxxx") {
 		t.Error("Rendered output does not contain the expected text 'xxxxx'")
@@ -90,14 +90,14 @@ func TestInputSoftWrapWithSpaces(t *testing.T) {
 
 	input := NewInput()
 	input.SetWidth(totalWidth)
-	input.View(totalWidth, PlanMode)
+	input.View(totalWidth)
 
 	text := "hello world this is a test of word wrapping"
 	for _, ch := range text {
 		typeChar(&input, ch)
 	}
 
-	rendered := input.View(totalWidth, PlanMode)
+	rendered := input.View(totalWidth)
 
 	if !strings.Contains(rendered, "hello") {
 		t.Error("Rendered output missing 'hello' (start of text)")

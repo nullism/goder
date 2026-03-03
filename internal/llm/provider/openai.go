@@ -236,6 +236,20 @@ func (p *OpenAIProvider) SendMessage(ctx context.Context, req Request) (<-chan S
 		defer close(events)
 		defer resp.Body.Close()
 
+		// If the context is cancelled, close the response body to unblock
+		// the scanner in processStream. Without this, a stalled SSE
+		// connection would block on scanner.Scan() indefinitely because
+		// the I/O read doesn't check the context.
+		done := make(chan struct{})
+		go func() {
+			select {
+			case <-ctx.Done():
+				resp.Body.Close()
+			case <-done:
+			}
+		}()
+		defer close(done)
+
 		p.processStream(ctx, resp.Body, events)
 	}()
 
@@ -508,6 +522,12 @@ func (p *OpenAIProvider) processStream(ctx context.Context, body io.Reader, even
 	}
 
 	if err := scanner.Err(); err != nil {
+		// If the context was cancelled (e.g. timeout or user cancel), report
+		// that instead of the raw I/O error from the closed body.
+		if ctx.Err() != nil {
+			events <- StreamEvent{Type: EventError, Error: ctx.Err()}
+			return
+		}
 		events <- StreamEvent{Type: EventError, Error: fmt.Errorf("reading stream: %w", err)}
 		return
 	}

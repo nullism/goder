@@ -13,6 +13,7 @@ import (
 	"github.com/nullism/goder/internal/config"
 	"github.com/nullism/goder/internal/db"
 	"github.com/nullism/goder/internal/llm/agent"
+	"github.com/nullism/goder/internal/llm/planner"
 	"github.com/nullism/goder/internal/llm/provider"
 	"github.com/nullism/goder/internal/message"
 	"github.com/nullism/goder/internal/permission"
@@ -32,33 +33,9 @@ type programRef struct {
 func (r *programRef) Store(p *tea.Program) { r.p.Store(p) }
 func (r *programRef) Load() *tea.Program   { return r.p.Load() }
 
-// Mode represents the operating mode of the application.
-type Mode int
-
-const (
-	// PlanMode is read-only analysis mode. The assistant will reason about the
-	// codebase but will not make changes.
-	PlanMode Mode = iota
-
-	// BuildMode allows the assistant to create, edit, and delete files.
-	BuildMode
-)
-
-func (m Mode) String() string {
-	switch m {
-	case PlanMode:
-		return "plan"
-	case BuildMode:
-		return "build"
-	default:
-		return "unknown"
-	}
-}
-
 // Model is the top-level bubbletea model for the application.
 type Model struct {
 	// Core state
-	mode   Mode
 	keys   KeyMap
 	input  Input
 	msgs   MessageList
@@ -73,6 +50,9 @@ type Model struct {
 	registry *tools.Registry
 	prov     provider.Provider
 	permSvc  *permission.Service
+
+	// Planning agents
+	plannerSpecs []planner.PlannerSpec
 
 	// Session usage state
 	tokenTotal int
@@ -97,20 +77,20 @@ type Model struct {
 }
 
 // New creates and returns a new Model.
-func New(cfg config.Config, database *db.DB, sessions *session.Service, registry *tools.Registry, prov provider.Provider, permSvc *permission.Service) Model {
+func New(cfg config.Config, database *db.DB, sessions *session.Service, registry *tools.Registry, prov provider.Provider, permSvc *permission.Service, plannerSpecs []planner.PlannerSpec) Model {
 	return Model{
-		mode:     PlanMode,
-		keys:     DefaultKeyMap(),
-		input:    NewInput(),
-		msgs:     NewMessageList(),
-		settings: NewSettings(provider.Supported(), cfg.Provider),
-		cfg:      cfg,
-		database: database,
-		sessions: sessions,
-		registry: registry,
-		prov:     prov,
-		permSvc:  permSvc,
-		progRef:  &programRef{}, // shared across Bubble Tea value copies
+		keys:         DefaultKeyMap(),
+		input:        NewInput(),
+		msgs:         NewMessageList(),
+		settings:     NewSettings(provider.Supported(), cfg.Provider),
+		cfg:          cfg,
+		database:     database,
+		sessions:     sessions,
+		registry:     registry,
+		prov:         prov,
+		permSvc:      permSvc,
+		plannerSpecs: plannerSpecs,
+		progRef:      &programRef{}, // shared across Bubble Tea value copies
 	}
 }
 
@@ -118,6 +98,23 @@ func New(cfg config.Config, database *db.DB, sessions *session.Service, registry
 // Safe to call after tea.NewProgram because progRef is shared across copies.
 func (m *Model) SetProgram(p *tea.Program) {
 	m.progRef.Store(p)
+}
+
+// rebuildPlannerSpecs recreates the planner specs from the current config.
+// Called when planners are added or removed via the settings UI.
+func rebuildPlannerSpecs(cfg config.Config) []planner.PlannerSpec {
+	var specs []planner.PlannerSpec
+	for _, pa := range cfg.Agents.Planners {
+		planProv, err := provider.New(pa.Provider, cfg.APIKeyFor(pa.Provider), pa.Model)
+		if err != nil {
+			continue
+		}
+		specs = append(specs, planner.PlannerSpec{
+			Provider: planProv,
+			Model:    pa.Model,
+		})
+	}
+	return specs
 }
 
 // Init implements tea.Model.
@@ -302,21 +299,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 
-		case key.Matches(msg, m.keys.ToggleMode):
-			if m.thinking {
-				return m, nil // don't toggle while agent is running
-			}
-			if m.mode == PlanMode {
-				m.mode = BuildMode
-				m.msgs.Add(message.System,
-					"Switched to BUILD mode. The assistant can now create and modify files.")
-			} else {
-				m.mode = PlanMode
-				m.msgs.Add(message.System,
-					"Switched to PLAN mode. The assistant will only analyze, not modify files.")
-			}
-			return m, nil
-
 		case key.Matches(msg, m.keys.Submit):
 			if m.thinking {
 				return m, nil // don't submit while agent is running
@@ -381,22 +363,38 @@ func (m *Model) submitPrompt(prompt string) tea.Cmd {
 	ctx, cancel := context.WithCancel(context.Background())
 	m.agentCancel = cancel
 
-	ag := agent.New(agent.Config{
-		Provider:      m.prov,
-		Registry:      m.registry,
-		PermSvc:       m.permSvc,
-		WorkDir:       m.cfg.WorkDir,
-		Mode:          m.mode.String(),
-		Model:         m.cfg.Model,
-		MaxTokens:     m.cfg.MaxTokens,
-		MaxIterations: m.cfg.MaxIterations,
-	})
+	// Choose between planner flow and single-agent loop
+	var eventCh <-chan agent.Event
+
+	if len(m.plannerSpecs) > 0 {
+		pl := planner.New(planner.Config{
+			MainProvider:  m.prov,
+			PlannerSpecs:  m.plannerSpecs,
+			Registry:      m.registry,
+			PermSvc:       m.permSvc,
+			WorkDir:       m.cfg.WorkDir,
+			MainModel:     m.cfg.MainAgentModel(),
+			MaxTokens:     m.cfg.MaxTokens,
+			MaxIterations: m.cfg.MaxIterations,
+		})
+		eventCh = pl.Run(ctx, history, sessionID)
+	} else {
+		ag := agent.New(agent.Config{
+			Provider:      m.prov,
+			Registry:      m.registry,
+			PermSvc:       m.permSvc,
+			WorkDir:       m.cfg.WorkDir,
+			Model:         m.cfg.Model,
+			MaxTokens:     m.cfg.MaxTokens,
+			MaxIterations: m.cfg.MaxIterations,
+		})
+		eventCh = ag.Run(ctx, history, sessionID)
+	}
 
 	program := m.progRef.Load()
 
 	// Return a command that reads from the agent event channel
 	return func() tea.Msg {
-		eventCh := ag.Run(ctx, history, sessionID)
 		event, ok := <-eventCh
 		if !ok {
 			return agentEventMsg{event: agent.Event{Type: agent.EventAgentDone}}
@@ -473,6 +471,18 @@ func (m Model) handleAgentEvent(event agent.Event) (tea.Model, tea.Cmd) {
 		}
 		m.msgs.Add(message.System, errText)
 		return m, m.listenForPermissions()
+
+	case agent.EventPlanningPhase:
+		m.msgs.AddPlanPhase(event.PlanPhase)
+		return m, nil
+
+	case agent.EventPlannerStart:
+		m.msgs.AddPlannerStart(event.PlannerModel)
+		return m, nil
+
+	case agent.EventPlannerDone:
+		m.msgs.AddPlannerDone(event.PlannerModel, event.PlannerPlan)
+		return m, nil
 	}
 
 	return m, nil
@@ -545,6 +555,39 @@ func (m Model) handleSettingsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				interval:   dcResp.Interval,
 			}
 		}
+	}
+
+	// Handle transition to main agent model selection (trigger fetch)
+	if prevView != settingsViewAgentMainModels && m.settings.view == settingsViewAgentMainModels {
+		provName := m.settings.AgentProviderPick()
+		apiKey := m.cfg.APIKeyFor(provName)
+		tmpProv, err := provider.New(provName, apiKey, "")
+		if err != nil {
+			m.settings.HandleModelsLoaded(nil, fmt.Errorf("provider error: %s", err.Error()))
+			return m, nil
+		}
+		return m, fetchModelsCmd(context.Background(), tmpProv.ListModels)
+	}
+
+	// Handle transition to planner model selection (trigger fetch)
+	if prevView != settingsViewPlannerModels && m.settings.view == settingsViewPlannerModels {
+		provName := m.settings.AgentProviderPick()
+		apiKey := m.cfg.APIKeyFor(provName)
+		tmpProv, err := provider.New(provName, apiKey, "")
+		if err != nil {
+			m.settings.HandleModelsLoaded(nil, fmt.Errorf("provider error: %s", err.Error()))
+			return m, nil
+		}
+		return m, fetchModelsCmd(context.Background(), tmpProv.ListModels)
+	}
+
+	// Handle transition to planners list — sync local copy from config
+	if prevView != settingsViewPlanners && m.settings.view == settingsViewPlanners {
+		var entries []agentEntry
+		for _, pa := range m.cfg.Agents.Planners {
+			entries = append(entries, agentEntry{Provider: pa.Provider, Model: pa.Model})
+		}
+		m.settings.SetPlanners(entries)
 	}
 
 	// Handle API key save on enter in API key view
@@ -633,6 +676,91 @@ func (m Model) handleSettingsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 
+	// Handle main agent model selection on enter
+	if m.settings.view == settingsViewAgentMainModels && msg.String() == "enter" {
+		selected := m.settings.SelectedModel()
+		if selected == "" {
+			return m, cmd
+		}
+
+		provName := m.settings.AgentProviderPick()
+		if m.cfg.Agents.Main == nil {
+			m.cfg.Agents.Main = &config.AgentSpec{}
+		}
+		m.cfg.Agents.Main.Provider = provName
+		m.cfg.Agents.Main.Model = selected
+
+		// Rebuild the main provider if the main agent changed
+		apiKey := m.cfg.APIKeyFor(provName)
+		newProv, err := provider.New(provName, apiKey, selected)
+		if err != nil {
+			m.settings.SetFeedback(fmt.Sprintf("Provider error: %s", err.Error()), true)
+			return m, cmd
+		}
+		m.prov = newProv
+
+		if err := config.Save(m.cfg); err != nil {
+			m.settings.SetFeedback(fmt.Sprintf("Save failed: %s", err.Error()), true)
+			return m, cmd
+		}
+
+		m.settings.SetFeedback(fmt.Sprintf("Main agent set to %s:%s", provName, selected), false)
+		m.settings.view = settingsViewAgents
+		return m, cmd
+	}
+
+	// Handle planner model selection on enter (adding a new planner)
+	if m.settings.view == settingsViewPlannerModels && msg.String() == "enter" {
+		selected := m.settings.SelectedModel()
+		if selected == "" {
+			return m, cmd
+		}
+
+		provName := m.settings.AgentProviderPick()
+		newSpec := config.AgentSpec{Provider: provName, Model: selected}
+		m.cfg.Agents.Planners = append(m.cfg.Agents.Planners, newSpec)
+
+		// Rebuild planner specs
+		m.plannerSpecs = rebuildPlannerSpecs(m.cfg)
+
+		if err := config.Save(m.cfg); err != nil {
+			m.settings.SetFeedback(fmt.Sprintf("Save failed: %s", err.Error()), true)
+			return m, cmd
+		}
+
+		m.settings.SetFeedback(fmt.Sprintf("Added planner %s:%s", provName, selected), false)
+		m.settings.view = settingsViewPlanners
+		// Re-sync planners list
+		var entries []agentEntry
+		for _, pa := range m.cfg.Agents.Planners {
+			entries = append(entries, agentEntry{Provider: pa.Provider, Model: pa.Model})
+		}
+		m.settings.SetPlanners(entries)
+		return m, cmd
+	}
+
+	// Handle planner deletion — detect when the local planners list changed
+	if m.settings.view == settingsViewPlanners && msg.String() == "d" {
+		localPlanners := m.settings.Planners()
+		if len(localPlanners) != len(m.cfg.Agents.Planners) {
+			// Sync config from local copy
+			m.cfg.Agents.Planners = make([]config.AgentSpec, len(localPlanners))
+			for i, p := range localPlanners {
+				m.cfg.Agents.Planners[i] = config.AgentSpec{Provider: p.Provider, Model: p.Model}
+			}
+
+			// Rebuild planner specs
+			m.plannerSpecs = rebuildPlannerSpecs(m.cfg)
+
+			if err := config.Save(m.cfg); err != nil {
+				m.settings.SetFeedback(fmt.Sprintf("Save failed: %s", err.Error()), true)
+				return m, cmd
+			}
+			m.settings.SetFeedback("Planner removed", false)
+			return m, cmd
+		}
+	}
+
 	return m, cmd
 }
 
@@ -675,7 +803,7 @@ func (m Model) View() string {
 		msgHeight = 3
 	}
 
-	header := HeaderView(m.mode, m.cfg.Model, m.tokenTotal, m.width)
+	header := HeaderView(m.cfg.Model, m.tokenTotal, m.width)
 	msgs := m.msgs.View(m.width, msgHeight)
 
 	// Show confirmation dialog if quitting
@@ -683,13 +811,18 @@ func (m Model) View() string {
 	if m.confirmQuit {
 		inputView = m.renderQuitConfirmDialog()
 	} else if m.settingsOpen {
-		inputView = m.settings.View(m.width, m.cfg.APIKeyFor(m.cfg.Provider), m.cfg.Model, m.cfg.MaxIterations)
+		mainAgent := agentEntry{Provider: m.cfg.MainAgentProvider(), Model: m.cfg.MainAgentModel()}
+		var plannerEntries []agentEntry
+		for _, pa := range m.cfg.Agents.Planners {
+			plannerEntries = append(plannerEntries, agentEntry{Provider: pa.Provider, Model: pa.Model})
+		}
+		inputView = m.settings.View(m.width, m.cfg.APIKeyFor(m.cfg.Provider), m.cfg.Model, m.cfg.MaxIterations, mainAgent, plannerEntries)
 	} else if m.permReq != nil {
 		inputView = m.renderPermissionDialog()
 	} else if m.thinking {
 		inputView = thinkingStyle.Width(m.width - 4).Render("  thinking...")
 	} else {
-		inputView = m.input.View(m.width, m.mode)
+		inputView = m.input.View(m.width)
 	}
 
 	status := StatusBarView(m.width, m.thinking)

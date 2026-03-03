@@ -4,7 +4,6 @@ import (
 	"math"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/textarea"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -33,12 +32,6 @@ func NewInput() Input {
 
 	// Keep the default InsertNewline binding (enter) so the textarea
 	// handles newlines naturally. Submit is bound to ctrl+s instead.
-
-	// Disable TransposeCharacterBackward to avoid conflict with ctrl+t (toggle mode).
-	ta.KeyMap.TransposeCharacterBackward = key.NewBinding(
-		key.WithKeys(),
-		key.WithDisabled(),
-	)
 
 	// Style the textarea to match the application theme.
 	focused, blurred := textarea.DefaultStyles()
@@ -105,20 +98,15 @@ func (i *Input) SetWidth(width int) {
 }
 
 // View renders the input area.
-func (i *Input) View(width int, mode Mode) string {
+func (i *Input) View(width int) string {
 	// Apply the width to the textarea for this render pass. Even though
 	// this mutation is lost (View runs on a copy of Model), it ensures the
 	// textarea.View() output has the correct width for this frame.
 	i.textArea.SetWidth(width - 6)
 
-	borderColor := colorPlan
-	if mode == BuildMode {
-		borderColor = colorBuild
-	}
-
-	style := inputBorderStyle.BorderForeground(borderColor)
+	style := inputBorderStyle
 	if i.focused {
-		style = inputFocusedBorderStyle.BorderForeground(borderColor)
+		style = inputFocusedBorderStyle
 	}
 
 	return style.Width(width - 4).Render(i.textArea.View())

@@ -8,6 +8,7 @@ import (
 
 	"github.com/nullism/goder/internal/config"
 	"github.com/nullism/goder/internal/db"
+	"github.com/nullism/goder/internal/llm/planner"
 	"github.com/nullism/goder/internal/llm/provider"
 	"github.com/nullism/goder/internal/permission"
 	"github.com/nullism/goder/internal/session"
@@ -43,8 +44,40 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Build planning agent specs if configured
+	var plannerSpecs []planner.PlannerSpec
+
+	if cfg.PlanningEnabled() {
+		for _, pa := range cfg.Agents.Planners {
+			planProv, err := provider.New(pa.Provider, cfg.APIKeyFor(pa.Provider), pa.Model)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "warning: skipping planning agent %s:%s: %v\n", pa.Provider, pa.Model, err)
+				continue
+			}
+			plannerSpecs = append(plannerSpecs, planner.PlannerSpec{
+				Provider: planProv,
+				Model:    pa.Model,
+			})
+		}
+
+		if len(plannerSpecs) == 0 {
+			fmt.Fprintf(os.Stderr, "warning: no valid planning agents configured, planning disabled\n")
+		}
+	}
+
+	// If a main agent is configured with a different provider/model, use that
+	mainProvName := cfg.MainAgentProvider()
+	mainModel := cfg.MainAgentModel()
+	if mainProvName != cfg.Provider || mainModel != cfg.Model {
+		prov, err = provider.New(mainProvName, cfg.APIKeyFor(mainProvName), mainModel)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error creating main agent provider: %v\n", err)
+			os.Exit(1)
+		}
+	}
+
 	// Create the TUI model
-	model := tui.New(cfg, database, sessionSvc, registry, prov, permSvc)
+	model := tui.New(cfg, database, sessionSvc, registry, prov, permSvc, plannerSpecs)
 
 	// Create the program
 	p := tea.NewProgram(

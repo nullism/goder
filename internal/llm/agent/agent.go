@@ -28,6 +28,9 @@ const (
 	EventAgentError
 	EventPermissionRequest
 	EventPersistMessage // intermediate message that should be saved to DB
+	EventPlanningPhase  // planning phase status change
+	EventPlannerStart   // a planning agent began working
+	EventPlannerDone    // a planning agent finished
 )
 
 // Event is sent from the agent loop to the TUI for rendering.
@@ -52,6 +55,11 @@ type Event struct {
 
 	// For PermissionRequest
 	PermissionReq *permission.Request
+
+	// For orchestrator events
+	PlanPhase    string // human-readable phase description (EventPlanningPhase)
+	PlannerModel string // which model handled this planner (EventPlannerStart/Done)
+	PlannerPlan  string // completed planner plan text (EventPlannerDone)
 }
 
 // Agent orchestrates the LLM + tool execution loop.
@@ -60,10 +68,10 @@ type Agent struct {
 	registry      *tools.Registry
 	permSvc       *permission.Service
 	workDir       string
-	mode          string
 	model         string
 	maxTokens     int
 	maxIterations int
+	systemPrompt  string // if non-empty, overrides the default prompt builder
 }
 
 // Config holds agent construction parameters.
@@ -72,10 +80,10 @@ type Config struct {
 	Registry      *tools.Registry
 	PermSvc       *permission.Service
 	WorkDir       string
-	Mode          string
 	Model         string
 	MaxTokens     int
 	MaxIterations int
+	SystemPrompt  string // if set, used instead of the default prompt builder
 }
 
 // New creates a new Agent.
@@ -89,16 +97,11 @@ func New(cfg Config) *Agent {
 		registry:      cfg.Registry,
 		permSvc:       cfg.PermSvc,
 		workDir:       cfg.WorkDir,
-		mode:          cfg.Mode,
 		model:         cfg.Model,
 		maxTokens:     cfg.MaxTokens,
 		maxIterations: maxIter,
+		systemPrompt:  cfg.SystemPrompt,
 	}
-}
-
-// SetMode updates the agent's operating mode.
-func (a *Agent) SetMode(mode string) {
-	a.mode = mode
 }
 
 // Run executes the agent loop. It sends events on the returned channel.
@@ -115,8 +118,39 @@ func (a *Agent) Run(ctx context.Context, history []message.Message, sessionID st
 	return events
 }
 
+// RunSync executes the agent loop synchronously and returns the final text
+// output. It builds a minimal history from taskPrompt and runs until the
+// agent produces a final response. Tool call/result events are consumed
+// internally. This is intended for child agents within the orchestrator.
+func (a *Agent) RunSync(ctx context.Context, taskPrompt string, sessionID string) (string, error) {
+	history := []message.Message{
+		message.NewUserMessage(sessionID, taskPrompt),
+	}
+
+	events := a.Run(ctx, history, sessionID)
+
+	var result strings.Builder
+	for ev := range events {
+		switch ev.Type {
+		case EventStreamText:
+			result.WriteString(ev.Text)
+		case EventAgentDone:
+			if ev.FinalMessage != nil {
+				return ev.FinalMessage.Content, nil
+			}
+			return result.String(), nil
+		case EventAgentError:
+			return result.String(), ev.Error
+		}
+	}
+	return result.String(), nil
+}
+
 func (a *Agent) runLoop(ctx context.Context, history []message.Message, sessionID string, events chan<- Event) {
-	systemPrompt := prompt.BuildSystemPrompt(a.mode, a.model, a.workDir, a.registry)
+	systemPrompt := a.systemPrompt
+	if systemPrompt == "" {
+		systemPrompt = prompt.BuildSystemPrompt(a.model, a.workDir, a.registry)
+	}
 
 	// Build tool definitions, filtering by mode
 	toolDefs := a.buildToolDefs()
@@ -344,17 +378,6 @@ func (a *Agent) executeTool(ctx context.Context, tc message.ToolCall, events cha
 		}
 	}
 
-	// Check mode restrictions
-	if a.mode == "plan" && tool.RequiresPermission() {
-		// In plan mode, block tools that modify files (write, edit, bash)
-		return message.ToolResult{
-			ToolCallID: tc.ID,
-			Name:       tc.Name,
-			Output:     fmt.Sprintf("Error: tool '%s' is not available in PLAN mode. Switch to BUILD mode to use this tool.", tc.Name),
-			IsError:    true,
-		}
-	}
-
 	// Check permissions for tools that require them
 	if tool.RequiresPermission() && a.permSvc != nil {
 		resp := a.permSvc.Check(ctx, tc.Name, string(tc.Input))
@@ -387,14 +410,10 @@ func (a *Agent) executeTool(ctx context.Context, tc message.ToolCall, events cha
 	}
 }
 
-// buildToolDefs creates tool definitions, filtering by mode.
+// buildToolDefs creates tool definitions from the registry.
 func (a *Agent) buildToolDefs() []provider.ToolDefinition {
 	var defs []provider.ToolDefinition
 	for _, t := range a.registry.All() {
-		// In plan mode, skip tools that require permission (write tools)
-		if a.mode == "plan" && t.RequiresPermission() {
-			continue
-		}
 		defs = append(defs, provider.ToolDefinition{
 			Name:        t.Name(),
 			Description: t.Description(),

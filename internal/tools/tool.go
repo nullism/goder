@@ -95,6 +95,23 @@ func (r *Registry) Execute(ctx context.Context, name string, input json.RawMessa
 	return t.Execute(ctx, input)
 }
 
+// ReadOnly returns a new Registry containing only tools that do not require
+// permission. This is used for planning agents that should only have access
+// to read-only tools (glob, grep, view, ls, fetch).
+func (r *Registry) ReadOnly() *Registry {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	ro := NewRegistry()
+	for _, name := range r.order {
+		t := r.tools[name]
+		if !t.RequiresPermission() {
+			ro.Register(t)
+		}
+	}
+	return ro
+}
+
 // DefaultRegistry creates a registry with all built-in tools pre-registered.
 func DefaultRegistry(workDir string) *Registry {
 	r := NewRegistry()

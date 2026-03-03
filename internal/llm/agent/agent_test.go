@@ -77,7 +77,6 @@ func TestMaxIterationsProducesFinalSummary(t *testing.T) {
 	ag := New(Config{
 		Provider:      mp,
 		Registry:      registry,
-		Mode:          "build",
 		MaxIterations: 3,
 	})
 
@@ -130,7 +129,6 @@ func TestNormalCompletionBeforeMaxIterations(t *testing.T) {
 	ag := New(Config{
 		Provider:      mp,
 		Registry:      registry,
-		Mode:          "build",
 		MaxIterations: 10,
 	})
 
@@ -179,7 +177,6 @@ func TestMaxIterationsFinalCallHasNoTools(t *testing.T) {
 	ag := New(Config{
 		Provider:      mp,
 		Registry:      registry,
-		Mode:          "build",
 		MaxIterations: 2,
 	})
 
@@ -353,7 +350,6 @@ func TestCancellationPersistsBothMessages(t *testing.T) {
 	ag := New(Config{
 		Provider:      wrappingProvider,
 		Registry:      registry,
-		Mode:          "build",
 		MaxIterations: 10,
 	})
 
@@ -437,7 +433,6 @@ func TestCancellationDuringToolExecution(t *testing.T) {
 	ag := New(Config{
 		Provider:      cancellingProvider,
 		Registry:      registry,
-		Mode:          "build",
 		MaxIterations: 10,
 	})
 

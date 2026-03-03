@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/nullism/goder/internal/message"
 )
@@ -21,6 +22,10 @@ type CopilotProvider struct {
 	apiKey  string
 	model   string
 	baseURL string
+
+	mu               sync.Mutex
+	copilotToken     string
+	tokenExchangeErr bool
 }
 
 // NewCopilotProvider creates a new GitHub Copilot provider.
@@ -38,7 +43,13 @@ func NewCopilotProvider(apiKey, model string) *CopilotProvider {
 func (p *CopilotProvider) Name() string { return "copilot" }
 
 // SetAPIKey updates the provider's API key at runtime.
-func (p *CopilotProvider) SetAPIKey(apiKey string) { p.apiKey = apiKey }
+func (p *CopilotProvider) SetAPIKey(apiKey string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.apiKey = apiKey
+	p.copilotToken = ""
+	p.tokenExchangeErr = false
+}
 
 // SetModel updates the provider's model at runtime.
 func (p *CopilotProvider) SetModel(model string) { p.model = model }
@@ -78,6 +89,8 @@ var fallbackCopilotModels = []string{
 // modelsDevURL is the URL for the models.dev registry.
 const modelsDevURL = "https://models.dev/api.json"
 
+const copilotTokenExchangeURL = "https://api.github.com/copilot_internal/v2/token"
+
 // modelsDevResponse represents the relevant portion of the models.dev JSON.
 // The top-level object is keyed by provider ID; each provider has a "models"
 // map keyed by model ID.
@@ -91,33 +104,204 @@ type modelsDevModel struct {
 	ID string `json:"id"`
 }
 
-// ListModels fetches the Copilot model list from the models.dev registry.
-// If the fetch fails, it falls back to a hardcoded list.
+type copilotModelsResponse struct {
+	Data []copilotModel `json:"data"`
+}
+
+type copilotModel struct {
+	ID                 string `json:"id"`
+	ModelPickerEnabled *bool  `json:"model_picker_enabled,omitempty"`
+	Policy             struct {
+		State string `json:"state,omitempty"`
+	} `json:"policy,omitempty"`
+}
+
+type copilotTokenExchangeResponse struct {
+	Token string `json:"token"`
+}
+
+// ListModels fetches model IDs from GitHub Copilot's /models endpoint and
+// augments them with models.dev. If both sources fail, it falls back to a
+// hardcoded list.
 func (p *CopilotProvider) ListModels(ctx context.Context) ([]string, error) {
+	modelSet := make(map[string]struct{})
+
+	copilotModels, err := p.fetchCopilotModels(ctx)
+	if err == nil {
+		for _, id := range copilotModels {
+			modelSet[id] = struct{}{}
+		}
+	}
+
+	modelsDevModels, err := fetchModelsDevCopilotModels(ctx)
+	if err == nil {
+		for _, id := range modelsDevModels {
+			modelSet[id] = struct{}{}
+		}
+	}
+
+	if len(modelSet) == 0 {
+		return fallbackCopilotModels, nil
+	}
+
+	models := make([]string, 0, len(modelSet))
+	for id := range modelSet {
+		models = append(models, id)
+	}
+	sort.Strings(models)
+	return models, nil
+}
+
+func (p *CopilotProvider) fetchCopilotModels(ctx context.Context) ([]string, error) {
+	bearerToken := p.resolveBearerToken(ctx)
+
+	httpReq, err := http.NewRequestWithContext(ctx, "GET", p.baseURL+"/models", nil)
+	if err != nil {
+		return nil, fmt.Errorf("creating copilot models request: %w", err)
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+bearerToken)
+	httpReq.Header.Set("Openai-Intent", "conversation-edits")
+
+	client := &http.Client{}
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("fetching copilot models: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("copilot models API error (HTTP %d): %s", resp.StatusCode, string(bodyBytes))
+	}
+
+	var modelsResp copilotModelsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&modelsResp); err != nil {
+		return nil, fmt.Errorf("decoding copilot models response: %w", err)
+	}
+
+	modelSet := make(map[string]struct{})
+	for _, m := range modelsResp.Data {
+		if m.ID == "" {
+			continue
+		}
+		if m.ModelPickerEnabled != nil && !*m.ModelPickerEnabled {
+			continue
+		}
+		if m.Policy.State != "" && m.Policy.State != "enabled" {
+			continue
+		}
+		modelSet[m.ID] = struct{}{}
+	}
+
+	if len(modelSet) == 0 {
+		return nil, fmt.Errorf("copilot models response contained no enabled models")
+	}
+
+	models := make([]string, 0, len(modelSet))
+	for id := range modelSet {
+		models = append(models, id)
+	}
+	sort.Strings(models)
+	return models, nil
+}
+
+func (p *CopilotProvider) resolveBearerToken(ctx context.Context) string {
+	p.mu.Lock()
+	apiKey := p.apiKey
+	cached := p.copilotToken
+	exchangeFailed := p.tokenExchangeErr
+	p.mu.Unlock()
+
+	if apiKey == "" {
+		return ""
+	}
+	if !isLikelyGitHubToken(apiKey) {
+		return apiKey
+	}
+	if cached != "" {
+		return cached
+	}
+	if exchangeFailed {
+		return apiKey
+	}
+
+	token, err := exchangeGitHubTokenForCopilot(ctx, apiKey)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if err != nil {
+		p.tokenExchangeErr = true
+		return apiKey
+	}
+	p.copilotToken = token
+	p.tokenExchangeErr = false
+	return token
+}
+
+func isLikelyGitHubToken(token string) bool {
+	return strings.HasPrefix(token, "gho_") ||
+		strings.HasPrefix(token, "ghp_") ||
+		strings.HasPrefix(token, "ghu_") ||
+		strings.HasPrefix(token, "ghs_") ||
+		strings.HasPrefix(token, "github_pat_")
+}
+
+func exchangeGitHubTokenForCopilot(ctx context.Context, githubToken string) (string, error) {
+	httpReq, err := http.NewRequestWithContext(ctx, "GET", copilotTokenExchangeURL, nil)
+	if err != nil {
+		return "", fmt.Errorf("creating copilot token exchange request: %w", err)
+	}
+	httpReq.Header.Set("Authorization", "token "+githubToken)
+	httpReq.Header.Set("Accept", "application/json")
+	httpReq.Header.Set("User-Agent", "goder/0.1")
+
+	client := &http.Client{}
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		return "", fmt.Errorf("exchanging github token for copilot token: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("copilot token exchange API error (HTTP %d): %s", resp.StatusCode, string(bodyBytes))
+	}
+
+	var tokenResp copilotTokenExchangeResponse
+	if err := json.NewDecoder(resp.Body).Decode(&tokenResp); err != nil {
+		return "", fmt.Errorf("decoding copilot token exchange response: %w", err)
+	}
+	if tokenResp.Token == "" {
+		return "", fmt.Errorf("copilot token exchange response missing token")
+	}
+	return tokenResp.Token, nil
+}
+
+func fetchModelsDevCopilotModels(ctx context.Context) ([]string, error) {
 	httpReq, err := http.NewRequestWithContext(ctx, "GET", modelsDevURL, nil)
 	if err != nil {
-		return fallbackCopilotModels, nil
+		return nil, fmt.Errorf("creating models.dev request: %w", err)
 	}
 
 	client := &http.Client{}
 	resp, err := client.Do(httpReq)
 	if err != nil {
-		return fallbackCopilotModels, nil
+		return nil, fmt.Errorf("fetching models.dev models: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return fallbackCopilotModels, nil
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("models.dev API error (HTTP %d): %s", resp.StatusCode, string(bodyBytes))
 	}
 
 	var registry modelsDevResponse
 	if err := json.NewDecoder(resp.Body).Decode(&registry); err != nil {
-		return fallbackCopilotModels, nil
+		return nil, fmt.Errorf("decoding models.dev response: %w", err)
 	}
 
 	provider, ok := registry["github-copilot"]
 	if !ok || len(provider.Models) == 0 {
-		return fallbackCopilotModels, nil
+		return nil, fmt.Errorf("models.dev response missing github-copilot models")
 	}
 
 	var models []string
@@ -343,6 +527,8 @@ func (p *CopilotProvider) SendMessage(ctx context.Context, req Request) (<-chan 
 
 // sendChatCompletions sends a streaming request via the Chat Completions API.
 func (p *CopilotProvider) sendChatCompletions(ctx context.Context, req Request) (<-chan StreamEvent, error) {
+	bearerToken := p.resolveBearerToken(ctx)
+
 	messages := p.buildMessages(req)
 
 	var tools []chatTool
@@ -379,7 +565,7 @@ func (p *CopilotProvider) sendChatCompletions(ctx context.Context, req Request) 
 	}
 
 	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
+	httpReq.Header.Set("Authorization", "Bearer "+bearerToken)
 	httpReq.Header.Set("Openai-Intent", "conversation-edits")
 	httpReq.Header.Set("User-Agent", "goder/0.1")
 
@@ -633,6 +819,8 @@ func (p *CopilotProvider) processStream(ctx context.Context, body io.Reader, eve
 
 // sendResponses sends a streaming request via the Responses API.
 func (p *CopilotProvider) sendResponses(ctx context.Context, req Request) (<-chan StreamEvent, error) {
+	bearerToken := p.resolveBearerToken(ctx)
+
 	input := p.buildResponsesInput(req)
 
 	var tools []responsesTool
@@ -672,7 +860,7 @@ func (p *CopilotProvider) sendResponses(ctx context.Context, req Request) (<-cha
 	}
 
 	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
+	httpReq.Header.Set("Authorization", "Bearer "+bearerToken)
 	httpReq.Header.Set("Openai-Intent", "conversation-edits")
 	httpReq.Header.Set("User-Agent", "goder/0.1")
 

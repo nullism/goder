@@ -7,7 +7,29 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 )
+
+// AgentSpec specifies a provider+model pair for an agent.
+type AgentSpec struct {
+	Provider string `json:"provider"`
+	Model    string `json:"model"`
+}
+
+// AgentsConfig holds the named agent configuration.
+// The main agent drives the conversation and executes plans.
+// Planning agents independently explore the codebase and produce plans.
+type AgentsConfig struct {
+	// Main is the provider+model for the main agent.
+	// Falls back to the top-level Provider/Model if omitted.
+	Main *AgentSpec `json:"main,omitempty"`
+
+	// Planners is the pool of provider+model pairs for planning agents.
+	// Each planner receives the full user request and independently
+	// produces a plan. If empty, planning is disabled and the main
+	// agent operates as a single agent.
+	Planners []AgentSpec `json:"planners,omitempty"`
+}
 
 // Config holds the application configuration.
 type Config struct {
@@ -41,6 +63,9 @@ type Config struct {
 
 	// WorkDir is the working directory. Defaults to cwd.
 	WorkDir string `json:"-"`
+
+	// Agents holds the named agent configuration (main + planners).
+	Agents AgentsConfig `json:"agents,omitempty"`
 }
 
 // DefaultConfig returns a Config with sensible defaults.
@@ -114,6 +139,21 @@ func Load() (Config, error) {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			cfg.MaxIterations = n
 		}
+	}
+	if v := os.Getenv("GODER_MAIN_PROVIDER"); v != "" {
+		if cfg.Agents.Main == nil {
+			cfg.Agents.Main = &AgentSpec{}
+		}
+		cfg.Agents.Main.Provider = v
+	}
+	if v := os.Getenv("GODER_MAIN_MODEL"); v != "" {
+		if cfg.Agents.Main == nil {
+			cfg.Agents.Main = &AgentSpec{}
+		}
+		cfg.Agents.Main.Model = v
+	}
+	if v := os.Getenv("GODER_PLANNING_AGENTS"); v != "" {
+		cfg.Agents.Planners = parsePlannerAgents(v)
 	}
 
 	// Load API key from provider-specific env var / legacy field.
@@ -222,4 +262,50 @@ func Save(cfg Config) error {
 // DBPath returns the path to the SQLite database file.
 func (c Config) DBPath() string {
 	return filepath.Join(c.DataDir, "goder.db")
+}
+
+// PlanningEnabled returns true if planning agents are configured.
+func (c Config) PlanningEnabled() bool {
+	return len(c.Agents.Planners) > 0
+}
+
+// MainAgentProvider returns the provider for the main agent,
+// falling back to the top-level Provider if not set.
+func (c Config) MainAgentProvider() string {
+	if c.Agents.Main != nil && c.Agents.Main.Provider != "" {
+		return c.Agents.Main.Provider
+	}
+	return c.Provider
+}
+
+// MainAgentModel returns the model for the main agent,
+// falling back to the top-level Model if not set.
+func (c Config) MainAgentModel() string {
+	if c.Agents.Main != nil && c.Agents.Main.Model != "" {
+		return c.Agents.Main.Model
+	}
+	return c.Model
+}
+
+// parsePlannerAgents parses a comma-separated list of "provider:model" pairs.
+// Example: "copilot:grok-code-fast-1,openai:gpt-4o,copilot:claude-sonnet-4.5"
+func parsePlannerAgents(s string) []AgentSpec {
+	var specs []AgentSpec
+	for _, entry := range strings.Split(s, ",") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		parts := strings.SplitN(entry, ":", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		prov := strings.TrimSpace(parts[0])
+		model := strings.TrimSpace(parts[1])
+		if prov == "" || model == "" {
+			continue
+		}
+		specs = append(specs, AgentSpec{Provider: prov, Model: model})
+	}
+	return specs
 }

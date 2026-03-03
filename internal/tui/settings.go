@@ -14,13 +14,19 @@ import (
 type settingsView int
 
 const (
-	settingsViewMenu         settingsView = iota // main menu
-	settingsViewProviders                        // providers list
-	settingsViewProviderMenu                     // provider submenu
-	settingsViewAPIKey                           // API key input
-	settingsViewModels                           // model selection list
-	settingsViewMaxIter                          // max iterations input
-	settingsViewCopilotAuth                      // GitHub Copilot device flow
+	settingsViewMenu            settingsView = iota // main menu
+	settingsViewProviders                           // providers list
+	settingsViewProviderMenu                        // provider submenu
+	settingsViewAPIKey                              // API key input
+	settingsViewModels                              // model selection list
+	settingsViewMaxIter                             // max iterations input
+	settingsViewCopilotAuth                         // GitHub Copilot device flow
+	settingsViewAgents                              // agents menu (main + planners)
+	settingsViewAgentMain                           // main agent provider selection
+	settingsViewAgentMainModels                     // main agent model selection
+	settingsViewPlanners                            // planners list
+	settingsViewPlannerAdd                          // add planner: provider selection
+	settingsViewPlannerModels                       // add planner: model selection
 )
 
 // Settings holds the state for the settings overlay.
@@ -53,7 +59,29 @@ type Settings struct {
 	copilotPolling  bool               // true while polling for authorization
 	copilotCancel   context.CancelFunc // cancels the polling goroutine
 	copilotErr      error              // error from the device flow
+
+	// Agent configuration state
+	agentProviderCursor int            // cursor for agent provider selection lists
+	agentProviderPick   string         // provider chosen when adding/editing an agent
+	planners            []agentEntry   // local copy of configured planners
+	plannerCursor       int            // cursor within planners list
+	modelSelectTarget   modelSelectFor // what the model list is being used for
 }
+
+// agentEntry is a provider+model pair displayed in the planners list.
+type agentEntry struct {
+	Provider string
+	Model    string
+}
+
+// modelSelectFor distinguishes which flow triggered the model selection list.
+type modelSelectFor int
+
+const (
+	modelSelectDefault    modelSelectFor = iota // normal provider→model flow
+	modelSelectAgentMain                        // main agent model
+	modelSelectPlannerAdd                       // adding a new planner
+)
 
 // NewSettings creates a new settings component.
 // providers is the list of supported provider identifiers;
@@ -122,6 +150,18 @@ func (s Settings) Update(msg tea.KeyMsg) (Settings, bool, tea.Cmd) {
 		return s.updateMaxIter(msg)
 	case settingsViewCopilotAuth:
 		return s.updateCopilotAuth(msg)
+	case settingsViewAgents:
+		return s.updateAgents(msg)
+	case settingsViewAgentMain:
+		return s.updateAgentMain(msg)
+	case settingsViewAgentMainModels:
+		return s.updateAgentMainModels(msg)
+	case settingsViewPlanners:
+		return s.updatePlanners(msg)
+	case settingsViewPlannerAdd:
+		return s.updatePlannerAdd(msg)
+	case settingsViewPlannerModels:
+		return s.updatePlannerModels(msg)
 	}
 	return s, false, nil
 }
@@ -142,6 +182,10 @@ func (s Settings) updateMenu(msg tea.KeyMsg) (Settings, bool, tea.Cmd) {
 		s.maxIterInput.SetValue("")
 		s.maxIterInput.Focus()
 		return s, false, s.maxIterInput.Cursor.BlinkCmd()
+	case "3", "a", "A":
+		s.view = settingsViewAgents
+		s.feedback = ""
+		return s, false, nil
 	}
 	return s, false, nil
 }
@@ -372,13 +416,13 @@ func (s Settings) APIKeyValue() string {
 }
 
 // View renders the settings overlay.
-func (s Settings) View(width int, currentKey, currentModel string, currentMaxIter int) string {
+func (s Settings) View(width int, currentKey, currentModel string, currentMaxIter int, mainAgent agentEntry, planners []agentEntry) string {
 	innerWidth := width - 6 // account for border + padding
 
 	var content string
 	switch s.view {
 	case settingsViewMenu:
-		content = s.viewMenu(currentKey, currentModel, currentMaxIter)
+		content = s.viewMenu(currentKey, currentModel, currentMaxIter, mainAgent, planners)
 	case settingsViewProviders:
 		content = s.viewProviders()
 	case settingsViewProviderMenu:
@@ -391,19 +435,37 @@ func (s Settings) View(width int, currentKey, currentModel string, currentMaxIte
 		content = s.viewMaxIter(innerWidth, currentMaxIter)
 	case settingsViewCopilotAuth:
 		content = s.viewCopilotAuth()
+	case settingsViewAgents:
+		content = s.viewAgents(mainAgent, planners)
+	case settingsViewAgentMain:
+		content = s.viewAgentMain(mainAgent)
+	case settingsViewAgentMainModels:
+		content = s.viewAgentMainModels(mainAgent)
+	case settingsViewPlanners:
+		content = s.viewPlannersList(planners)
+	case settingsViewPlannerAdd:
+		content = s.viewPlannerAdd()
+	case settingsViewPlannerModels:
+		content = s.viewPlannerModels()
 	}
 
 	return settingsStyle.Width(innerWidth).Render(content)
 }
 
 // viewMenu renders the main settings menu.
-func (s Settings) viewMenu(currentKey, currentModel string, currentMaxIter int) string {
+func (s Settings) viewMenu(currentKey, currentModel string, currentMaxIter int, mainAgent agentEntry, planners []agentEntry) string {
 	title := settingsTitleStyle.Render("Settings")
+
+	agentSummary := fmt.Sprintf("%s:%s", mainAgent.Provider, mainAgent.Model)
+	if len(planners) > 0 {
+		agentSummary += fmt.Sprintf(" + %d planners", len(planners))
+	}
 
 	var b strings.Builder
 	b.WriteString("  " + title + "\n\n")
 	fmt.Fprintf(&b, "  [1] Providers   %s\n", dimStyle.Render(s.selectedProvider))
 	fmt.Fprintf(&b, "  [2] Max Iters   %s\n", dimStyle.Render(strconv.Itoa(currentMaxIter)))
+	fmt.Fprintf(&b, "  [3] Agents      %s\n", dimStyle.Render(agentSummary))
 
 	if s.feedback != "" {
 		b.WriteString("\n")
@@ -697,6 +759,426 @@ func (s Settings) viewCopilotAuth() string {
 	b.WriteString("  " + settingsKeyHintStyle.Render("esc: cancel"))
 
 	return b.String()
+}
+
+// --- Agent settings update methods ---
+
+// updateAgents handles keys in the agents sub-menu.
+func (s Settings) updateAgents(msg tea.KeyMsg) (Settings, bool, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		s.view = settingsViewMenu
+		return s, false, nil
+	case "1", "m", "M":
+		s.view = settingsViewAgentMain
+		s.agentProviderCursor = 0
+		s.feedback = ""
+		return s, false, nil
+	case "2", "p", "P":
+		s.view = settingsViewPlanners
+		s.plannerCursor = 0
+		s.feedback = ""
+		return s, false, nil
+	}
+	return s, false, nil
+}
+
+// updateAgentMain handles keys in the main agent provider selection.
+func (s Settings) updateAgentMain(msg tea.KeyMsg) (Settings, bool, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		s.view = settingsViewAgents
+		return s, false, nil
+	case "up", "k":
+		if s.agentProviderCursor > 0 {
+			s.agentProviderCursor--
+		}
+		return s, false, nil
+	case "down", "j":
+		if s.agentProviderCursor < len(s.providers)-1 {
+			s.agentProviderCursor++
+		}
+		return s, false, nil
+	case "enter":
+		if len(s.providers) == 0 {
+			return s, false, nil
+		}
+		s.agentProviderPick = s.providers[s.agentProviderCursor]
+		s.providerForModels = s.agentProviderPick
+		s.modelSelectTarget = modelSelectAgentMain
+		s.view = settingsViewAgentMainModels
+		s.modelCursor = 0
+		s.models = nil
+		s.modelsErr = nil
+		s.loadingModel = true
+		s.feedback = ""
+		return s, false, nil
+	}
+	return s, false, nil
+}
+
+// updateAgentMainModels handles keys in the main agent model selection.
+func (s Settings) updateAgentMainModels(msg tea.KeyMsg) (Settings, bool, tea.Cmd) {
+	if s.loadingModel {
+		if msg.String() == "esc" {
+			s.view = settingsViewAgentMain
+			s.loadingModel = false
+			return s, false, nil
+		}
+		return s, false, nil
+	}
+	if s.modelsErr != nil {
+		if msg.String() == "esc" {
+			s.view = settingsViewAgentMain
+			s.modelsErr = nil
+			return s, false, nil
+		}
+		return s, false, nil
+	}
+	switch msg.String() {
+	case "esc":
+		s.view = settingsViewAgentMain
+		return s, false, nil
+	case "up", "k":
+		if s.modelCursor > 0 {
+			s.modelCursor--
+		}
+		return s, false, nil
+	case "down", "j":
+		if s.modelCursor < len(s.models)-1 {
+			s.modelCursor++
+		}
+		return s, false, nil
+	case "enter":
+		// model.go handles the save
+		return s, false, nil
+	}
+	return s, false, nil
+}
+
+// updatePlanners handles keys in the planners list view.
+func (s Settings) updatePlanners(msg tea.KeyMsg) (Settings, bool, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		s.view = settingsViewAgents
+		return s, false, nil
+	case "up", "k":
+		if s.plannerCursor > 0 {
+			s.plannerCursor--
+		}
+		return s, false, nil
+	case "down", "j":
+		if len(s.planners) > 0 && s.plannerCursor < len(s.planners)-1 {
+			s.plannerCursor++
+		}
+		return s, false, nil
+	case "a", "A":
+		s.view = settingsViewPlannerAdd
+		s.agentProviderCursor = 0
+		s.feedback = ""
+		return s, false, nil
+	case "d", "D":
+		// Delete highlighted planner — model.go handles persistence
+		if len(s.planners) > 0 && s.plannerCursor < len(s.planners) {
+			s.planners = append(s.planners[:s.plannerCursor], s.planners[s.plannerCursor+1:]...)
+			if s.plannerCursor >= len(s.planners) && s.plannerCursor > 0 {
+				s.plannerCursor--
+			}
+			return s, false, nil
+		}
+		return s, false, nil
+	}
+	return s, false, nil
+}
+
+// updatePlannerAdd handles keys in the add-planner provider selection.
+func (s Settings) updatePlannerAdd(msg tea.KeyMsg) (Settings, bool, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		s.view = settingsViewPlanners
+		return s, false, nil
+	case "up", "k":
+		if s.agentProviderCursor > 0 {
+			s.agentProviderCursor--
+		}
+		return s, false, nil
+	case "down", "j":
+		if s.agentProviderCursor < len(s.providers)-1 {
+			s.agentProviderCursor++
+		}
+		return s, false, nil
+	case "enter":
+		if len(s.providers) == 0 {
+			return s, false, nil
+		}
+		s.agentProviderPick = s.providers[s.agentProviderCursor]
+		s.providerForModels = s.agentProviderPick
+		s.modelSelectTarget = modelSelectPlannerAdd
+		s.view = settingsViewPlannerModels
+		s.modelCursor = 0
+		s.models = nil
+		s.modelsErr = nil
+		s.loadingModel = true
+		s.feedback = ""
+		return s, false, nil
+	}
+	return s, false, nil
+}
+
+// updatePlannerModels handles keys in the add-planner model selection.
+func (s Settings) updatePlannerModels(msg tea.KeyMsg) (Settings, bool, tea.Cmd) {
+	if s.loadingModel {
+		if msg.String() == "esc" {
+			s.view = settingsViewPlannerAdd
+			s.loadingModel = false
+			return s, false, nil
+		}
+		return s, false, nil
+	}
+	if s.modelsErr != nil {
+		if msg.String() == "esc" {
+			s.view = settingsViewPlannerAdd
+			s.modelsErr = nil
+			return s, false, nil
+		}
+		return s, false, nil
+	}
+	switch msg.String() {
+	case "esc":
+		s.view = settingsViewPlannerAdd
+		return s, false, nil
+	case "up", "k":
+		if s.modelCursor > 0 {
+			s.modelCursor--
+		}
+		return s, false, nil
+	case "down", "j":
+		if s.modelCursor < len(s.models)-1 {
+			s.modelCursor++
+		}
+		return s, false, nil
+	case "enter":
+		// model.go handles the save
+		return s, false, nil
+	}
+	return s, false, nil
+}
+
+// --- Agent settings view methods ---
+
+// viewAgents renders the agents sub-menu.
+func (s Settings) viewAgents(mainAgent agentEntry, planners []agentEntry) string {
+	title := settingsTitleStyle.Render("Agents")
+
+	mainSummary := fmt.Sprintf("%s:%s", mainAgent.Provider, mainAgent.Model)
+	plannerSummary := "none"
+	if len(planners) > 0 {
+		plannerSummary = fmt.Sprintf("%d configured", len(planners))
+	}
+
+	var b strings.Builder
+	b.WriteString("  " + title + "\n\n")
+	fmt.Fprintf(&b, "  [1] Main Agent  %s\n", dimStyle.Render(mainSummary))
+	fmt.Fprintf(&b, "  [2] Planners    %s\n", dimStyle.Render(plannerSummary))
+	b.WriteString("\n")
+	b.WriteString("  " + settingsKeyHintStyle.Render("esc: back"))
+	return b.String()
+}
+
+// viewAgentMain renders the main agent provider selection list.
+func (s Settings) viewAgentMain(mainAgent agentEntry) string {
+	title := settingsTitleStyle.Render("Main Agent Provider")
+
+	var b strings.Builder
+	b.WriteString("  " + title + "\n\n")
+	fmt.Fprintf(&b, "  Current: %s\n\n", dimStyle.Render(fmt.Sprintf("%s:%s", mainAgent.Provider, mainAgent.Model)))
+
+	for i, p := range s.providers {
+		cursor := "  "
+		style := settingsItemStyle
+		if i == s.agentProviderCursor {
+			cursor = settingsCursorStyle.Render("> ")
+			style = settingsSelectedStyle
+		}
+		suffix := ""
+		if p == mainAgent.Provider {
+			suffix = dimStyle.Render(" (current)")
+		}
+		b.WriteString("  " + cursor + style.Render(titleCase(p)) + suffix + "\n")
+	}
+
+	b.WriteString("\n")
+	b.WriteString("  " + settingsKeyHintStyle.Render("up/down: navigate  enter: select  esc: back"))
+	return b.String()
+}
+
+// viewAgentMainModels renders the model selection for the main agent.
+func (s Settings) viewAgentMainModels(mainAgent agentEntry) string {
+	title := settingsTitleStyle.Render("Main Agent Model")
+	return s.viewModelList(title, mainAgent.Model)
+}
+
+// viewPlannersList renders the list of configured planners.
+func (s Settings) viewPlannersList(planners []agentEntry) string {
+	title := settingsTitleStyle.Render("Planning Agents")
+
+	var b strings.Builder
+	b.WriteString("  " + title + "\n\n")
+
+	if len(planners) == 0 {
+		b.WriteString("  " + dimStyle.Render("No planning agents configured") + "\n")
+		b.WriteString("  " + dimStyle.Render("Add planners to enable multi-agent planning") + "\n")
+	} else {
+		for i, p := range planners {
+			cursor := "  "
+			style := settingsItemStyle
+			if i == s.plannerCursor {
+				cursor = settingsCursorStyle.Render("> ")
+				style = settingsSelectedStyle
+			}
+			b.WriteString("  " + cursor + style.Render(fmt.Sprintf("%s:%s", p.Provider, p.Model)) + "\n")
+		}
+	}
+
+	b.WriteString("\n")
+	hints := "[a] add  esc: back"
+	if len(planners) > 0 {
+		hints = "[a] add  [d] delete  esc: back"
+	}
+	b.WriteString("  " + settingsKeyHintStyle.Render(hints))
+	return b.String()
+}
+
+// viewPlannerAdd renders the provider selection for adding a planner.
+func (s Settings) viewPlannerAdd() string {
+	title := settingsTitleStyle.Render("Add Planner — Select Provider")
+
+	var b strings.Builder
+	b.WriteString("  " + title + "\n\n")
+
+	for i, p := range s.providers {
+		cursor := "  "
+		style := settingsItemStyle
+		if i == s.agentProviderCursor {
+			cursor = settingsCursorStyle.Render("> ")
+			style = settingsSelectedStyle
+		}
+		b.WriteString("  " + cursor + style.Render(titleCase(p)) + "\n")
+	}
+
+	b.WriteString("\n")
+	b.WriteString("  " + settingsKeyHintStyle.Render("up/down: navigate  enter: select  esc: back"))
+	return b.String()
+}
+
+// viewPlannerModels renders the model selection for adding a planner.
+func (s Settings) viewPlannerModels() string {
+	title := settingsTitleStyle.Render("Add Planner — Select Model")
+	return s.viewModelList(title, "")
+}
+
+// viewModelList is a shared helper for rendering a scrollable model list.
+// It reuses the same models/modelCursor/loadingModel/modelsErr state.
+func (s Settings) viewModelList(title, currentModel string) string {
+	var b strings.Builder
+	b.WriteString("  " + title + "\n\n")
+
+	if s.loadingModel {
+		b.WriteString("  Loading models...")
+		b.WriteString("\n\n")
+		b.WriteString("  " + settingsKeyHintStyle.Render("esc: back"))
+		return b.String()
+	}
+
+	if s.modelsErr != nil {
+		b.WriteString("  " + settingsErrorStyle.Render(fmt.Sprintf("Error: %s", s.modelsErr.Error())))
+		b.WriteString("\n\n")
+		b.WriteString("  " + settingsKeyHintStyle.Render("esc: back"))
+		return b.String()
+	}
+
+	if len(s.models) == 0 {
+		fmt.Fprintf(&b, "  No models found for %s\n", titleCase(s.providerForModels))
+		b.WriteString("\n\n")
+		b.WriteString("  " + settingsKeyHintStyle.Render("esc: back"))
+		return b.String()
+	}
+
+	fmt.Fprintf(&b, "  %s\n\n", dimStyle.Render(titleCase(s.providerForModels)))
+
+	maxVisible := 10
+	if maxVisible > len(s.models) {
+		maxVisible = len(s.models)
+	}
+
+	start := 0
+	if s.modelCursor >= maxVisible {
+		start = s.modelCursor - maxVisible + 1
+	}
+	end := start + maxVisible
+	if end > len(s.models) {
+		end = len(s.models)
+		start = end - maxVisible
+		if start < 0 {
+			start = 0
+		}
+	}
+
+	for i := start; i < end; i++ {
+		model := s.models[i]
+		cursor := "  "
+		style := settingsItemStyle
+		if i == s.modelCursor {
+			cursor = settingsCursorStyle.Render("> ")
+			style = settingsSelectedStyle
+		}
+		suffix := ""
+		if model == currentModel {
+			suffix = dimStyle.Render(" (current)")
+		}
+		b.WriteString("  " + cursor + style.Render(model) + suffix + "\n")
+	}
+
+	if len(s.models) > maxVisible {
+		fmt.Fprintf(&b, "\n  %s",
+			dimStyle.Render(fmt.Sprintf("showing %d-%d of %d", start+1, end, len(s.models))))
+	}
+
+	if s.feedback != "" {
+		b.WriteString("\n")
+		if s.feedbackErr {
+			b.WriteString("  " + settingsErrorStyle.Render(s.feedback))
+		} else {
+			b.WriteString("  " + settingsSuccessStyle.Render(s.feedback))
+		}
+	}
+
+	b.WriteString("\n\n")
+	b.WriteString("  " + settingsKeyHintStyle.Render("up/down: navigate  enter: select  esc: back"))
+	return b.String()
+}
+
+// Planners returns a copy of the settings' local planners list.
+func (s Settings) Planners() []agentEntry {
+	out := make([]agentEntry, len(s.planners))
+	copy(out, s.planners)
+	return out
+}
+
+// SetPlanners replaces the settings' local planners list.
+func (s *Settings) SetPlanners(planners []agentEntry) {
+	s.planners = make([]agentEntry, len(planners))
+	copy(s.planners, planners)
+}
+
+// AgentProviderPick returns the provider selected during agent configuration.
+func (s Settings) AgentProviderPick() string {
+	return s.agentProviderPick
+}
+
+// ModelSelectTarget returns the current model selection target.
+func (s Settings) ModelSelectTarget() modelSelectFor {
+	return s.modelSelectTarget
 }
 
 // fetchModelsCmd creates a tea.Cmd that fetches models from the provider.

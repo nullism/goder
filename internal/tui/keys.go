@@ -6,7 +6,6 @@ import "github.com/charmbracelet/bubbles/key"
 type KeyMap struct {
 	Quit       key.Binding
 	Submit     key.Binding
-	ToggleMode key.Binding
 	Cancel     key.Binding
 	ScrollUp   key.Binding
 	ScrollDown key.Binding
@@ -25,10 +24,6 @@ func DefaultKeyMap() KeyMap {
 		Submit: key.NewBinding(
 			key.WithKeys("ctrl+s"),
 			key.WithHelp("ctrl+s", "submit"),
-		),
-		ToggleMode: key.NewBinding(
-			key.WithKeys("ctrl+t"),
-			key.WithHelp("ctrl+t", "toggle mode"),
 		),
 		Cancel: key.NewBinding(
 			key.WithKeys("esc"),

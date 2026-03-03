@@ -11,23 +11,15 @@ import (
 )
 
 // HeaderView renders the top header bar showing the logo and persistent status.
-func HeaderView(mode Mode, model string, tokenTotal int, width int) string {
+func HeaderView(model string, tokenTotal int, width int) string {
 	logo := logoStyle.Render("goder") + " " + dimStyle.Render(version.Version)
-
-	var modeLabel string
-	switch mode {
-	case PlanMode:
-		modeLabel = modePlanStyle.Render("PLAN")
-	case BuildMode:
-		modeLabel = modeBuildStyle.Render("BUILD")
-	}
 
 	printer := message.NewPrinter(language.English)
 	modelLabel := fmt.Sprintf("%s %s", statusKeyStyle.Render("model:"), statusDescStyle.Render(model))
 	tokensLabel := fmt.Sprintf("%s %s", statusKeyStyle.Render("tokens:"), statusDescStyle.Render(printer.Sprintf("%d", tokenTotal)))
 	right := fmt.Sprintf("%s  %s", modelLabel, tokensLabel)
 
-	left := fmt.Sprintf("%s  %s", logo, modeLabel)
+	left := logo
 	gap := width - lipgloss.Width(left) - lipgloss.Width(right) - 2
 	if gap < 1 {
 		gap = 1

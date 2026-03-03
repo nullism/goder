@@ -27,6 +27,13 @@ type DisplayMessage struct {
 
 	// Streaming state
 	IsStreaming bool
+
+	// Planning display
+	IsPlanPhase    bool
+	IsPlannerStart bool
+	IsPlannerDone  bool
+	PlannerModel   string
+	PlannerPlan    string
 }
 
 // MessageList holds the conversation display state.
@@ -183,6 +190,55 @@ func (ml *MessageList) AddToolResult(toolName, output string, isError bool) {
 	}
 }
 
+// AddPlanPhase adds a planning phase indicator message.
+func (ml *MessageList) AddPlanPhase(phase string) {
+	wasAtBottom := ml.offset == 0
+
+	ml.messages = append(ml.messages, DisplayMessage{
+		Role:        message.System,
+		Content:     phase,
+		Timestamp:   time.Now(),
+		IsPlanPhase: true,
+	})
+
+	if wasAtBottom {
+		ml.scrollToBottom()
+	}
+}
+
+// AddPlannerStart adds a planning agent start indicator message.
+func (ml *MessageList) AddPlannerStart(model string) {
+	wasAtBottom := ml.offset == 0
+
+	ml.messages = append(ml.messages, DisplayMessage{
+		Role:           message.System,
+		Timestamp:      time.Now(),
+		IsPlannerStart: true,
+		PlannerModel:   model,
+	})
+
+	if wasAtBottom {
+		ml.scrollToBottom()
+	}
+}
+
+// AddPlannerDone adds a planning agent completion indicator message.
+func (ml *MessageList) AddPlannerDone(model, plan string) {
+	wasAtBottom := ml.offset == 0
+
+	ml.messages = append(ml.messages, DisplayMessage{
+		Role:          message.System,
+		Timestamp:     time.Now(),
+		IsPlannerDone: true,
+		PlannerModel:  model,
+		PlannerPlan:   plan,
+	})
+
+	if wasAtBottom {
+		ml.scrollToBottom()
+	}
+}
+
 func (ml *MessageList) scrollToBottom() {
 	ml.offset = 0
 }
@@ -249,6 +305,31 @@ func (ml *MessageList) View(width, height int) string {
 }
 
 func renderDisplayMessage(msg DisplayMessage, width int) string {
+	// Planning phase message
+	if msg.IsPlanPhase {
+		return planPhaseStyle.Render(fmt.Sprintf("  > %s", msg.Content))
+	}
+
+	// Planner start message
+	if msg.IsPlannerStart {
+		model := plannerModelStyle.Render(msg.PlannerModel)
+		return plannerStartStyle.Render(fmt.Sprintf("  > [%s] planning...", model))
+	}
+
+	// Planner done message
+	if msg.IsPlannerDone {
+		model := plannerModelStyle.Render(msg.PlannerModel)
+		label := plannerDoneStyle.Render(fmt.Sprintf("  > [%s] plan complete", model))
+		if msg.PlannerPlan != "" {
+			planPreview := msg.PlannerPlan
+			if len(planPreview) > 200 {
+				planPreview = planPreview[:200] + "..."
+			}
+			return label + "\n" + dimStyle.Render(fmt.Sprintf("  %s", planPreview))
+		}
+		return label
+	}
+
 	// Tool call message
 	if msg.IsToolCall {
 		label := toolCallStyle.Render(fmt.Sprintf("  tool: %s", msg.ToolName))

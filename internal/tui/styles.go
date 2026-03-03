@@ -6,8 +6,6 @@ import "github.com/charmbracelet/lipgloss"
 var (
 	colorPrimary   = lipgloss.Color("#7C3AED") // violet
 	colorSecondary = lipgloss.Color("#06B6D4") // cyan
-	colorPlan      = lipgloss.Color("#7C3AED") // violet
-	colorBuild     = lipgloss.Color("#06B6D4") // cyan
 	colorDim       = lipgloss.Color("#6B7280") // gray
 	colorText      = lipgloss.Color("#E5E7EB") // light gray
 	colorBorder    = lipgloss.Color("#374151") // border gray
@@ -29,18 +27,6 @@ var (
 	logoStyle = lipgloss.NewStyle().
 			Bold(true).
 			Foreground(colorPrimary)
-
-	modePlanStyle = lipgloss.NewStyle().
-			Bold(true).
-			Foreground(lipgloss.Color("#000000")).
-			Background(colorPlan).
-			Padding(0, 1)
-
-	modeBuildStyle = lipgloss.NewStyle().
-			Bold(true).
-			Foreground(lipgloss.Color("#000000")).
-			Background(colorBuild).
-			Padding(0, 1)
 )
 
 // Message styles
@@ -77,6 +63,23 @@ var (
 
 	toolErrorStyle = lipgloss.NewStyle().
 			Foreground(colorError)
+)
+
+// Planning styles
+var (
+	planPhaseStyle = lipgloss.NewStyle().
+			Foreground(colorSecondary).
+			Bold(true)
+
+	plannerStartStyle = lipgloss.NewStyle().
+				Foreground(colorTool)
+
+	plannerDoneStyle = lipgloss.NewStyle().
+				Foreground(colorSuccess)
+
+	plannerModelStyle = lipgloss.NewStyle().
+				Foreground(colorAssistant).
+				Bold(true)
 )
 
 // Input area styles
