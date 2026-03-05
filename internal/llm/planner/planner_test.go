@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/nullism/goder/internal/llm/agent"
@@ -107,6 +108,86 @@ func (p *errorProvider) SendMessage(_ context.Context, req provider.Request) (<-
 func (p *errorProvider) ListModels(_ context.Context) ([]string, error) { return nil, nil }
 func (p *errorProvider) SetAPIKey(_ string)                             {}
 func (p *errorProvider) SetModel(_ string)                              {}
+
+// emptyThenTextProvider returns an empty response first, then returns text
+// only when tools are disabled on retry.
+type emptyThenTextProvider struct {
+	name     string
+	text     string
+	mu       sync.Mutex
+	calls    int
+	requests []provider.Request
+}
+
+func (p *emptyThenTextProvider) Name() string { return p.name }
+
+func (p *emptyThenTextProvider) SendMessage(_ context.Context, req provider.Request) (<-chan provider.StreamEvent, error) {
+	p.mu.Lock()
+	p.calls++
+	callNum := p.calls
+	p.requests = append(p.requests, req)
+	p.mu.Unlock()
+
+	ch := make(chan provider.StreamEvent, 10)
+	go func() {
+		defer close(ch)
+		if callNum == 1 {
+			// First attempt: empty content (simulates Gemini no-plan-output case)
+			ch <- provider.StreamEvent{Type: provider.EventDone, Usage: provider.Usage{TotalTokens: 7}}
+			return
+		}
+
+		if len(req.Tools) == 0 {
+			ch <- provider.StreamEvent{Type: provider.EventTextDelta, Text: p.text}
+		}
+		ch <- provider.StreamEvent{Type: provider.EventDone, Usage: provider.Usage{TotalTokens: 11}}
+	}()
+	return ch, nil
+}
+
+func (p *emptyThenTextProvider) ListModels(_ context.Context) ([]string, error) { return nil, nil }
+func (p *emptyThenTextProvider) SetAPIKey(_ string)                             {}
+func (p *emptyThenTextProvider) SetModel(_ string)                              {}
+
+func (p *emptyThenTextProvider) Requests() []provider.Request {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	out := make([]provider.Request, len(p.requests))
+	copy(out, p.requests)
+	return out
+}
+
+// alwaysEmptyProvider always returns an empty message, even on no-tools retry.
+type alwaysEmptyProvider struct {
+	name  string
+	mu    sync.Mutex
+	calls int
+}
+
+func (p *alwaysEmptyProvider) Name() string { return p.name }
+
+func (p *alwaysEmptyProvider) SendMessage(_ context.Context, _ provider.Request) (<-chan provider.StreamEvent, error) {
+	p.mu.Lock()
+	p.calls++
+	p.mu.Unlock()
+
+	ch := make(chan provider.StreamEvent, 10)
+	go func() {
+		defer close(ch)
+		ch <- provider.StreamEvent{Type: provider.EventDone, Usage: provider.Usage{TotalTokens: 5}}
+	}()
+	return ch, nil
+}
+
+func (p *alwaysEmptyProvider) ListModels(_ context.Context) ([]string, error) { return nil, nil }
+func (p *alwaysEmptyProvider) SetAPIKey(_ string)                             {}
+func (p *alwaysEmptyProvider) SetModel(_ string)                              {}
+
+func (p *alwaysEmptyProvider) Calls() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.calls
+}
 
 // mockTool implements tools.Tool for testing.
 type mockTool struct{}
@@ -345,6 +426,48 @@ func TestPlannerRun_PartialPlannerFailure(t *testing.T) {
 	}
 }
 
+func TestPlannerRun_PlannerFailureSetsPlannerErrorField(t *testing.T) {
+	goodProv := &mockProvider{name: "good", response: "Good plan from surviving planner."}
+	errProv := &errorProvider{name: "failing"}
+	mainProv := &mockProvider{name: "main", response: "Synthesized from partial results."}
+
+	p := New(Config{
+		MainProvider: mainProv,
+		PlannerSpecs: []PlannerSpec{
+			{Provider: goodProv, Model: "good-model"},
+			{Provider: errProv, Model: "bad-model"},
+		},
+		Registry:      newTestRegistry(),
+		WorkDir:       "/tmp/test",
+		MaxTokens:     4096,
+		MaxIterations: 9,
+	})
+
+	history := []message.Message{
+		message.NewUserMessage("sess-1", "do something"),
+	}
+
+	events := p.Run(context.Background(), history, "sess-1")
+
+	seenBadPlannerDone := false
+	for ev := range events {
+		if ev.Type != agent.EventPlannerDone || ev.PlannerModel != "bad-model" {
+			continue
+		}
+		seenBadPlannerDone = true
+		if ev.PlannerError == "" {
+			t.Fatal("expected PlannerError to be set for failed planner")
+		}
+		if ev.PlannerPlan != "" {
+			t.Fatalf("expected PlannerPlan to be empty on failed planner, got %q", ev.PlannerPlan)
+		}
+	}
+
+	if !seenBadPlannerDone {
+		t.Fatal("expected a PlannerDone event for bad-model")
+	}
+}
+
 func TestPlannerRun_PlannerUsesTools(t *testing.T) {
 	// A planner that uses tools (via RunSync) should still produce a plan.
 	toolProv := &toolCallProvider{name: "tool-user"}
@@ -384,6 +507,100 @@ func TestPlannerRun_PlannerUsesTools(t *testing.T) {
 	}
 	if finalMsg == nil {
 		t.Fatal("expected final message")
+	}
+}
+
+func TestPlannerRun_EmptyPlannerResponseRetriesWithoutTools(t *testing.T) {
+	plannerProv := &emptyThenTextProvider{name: "empty-then-text", text: "Recovered plan after no-tools retry."}
+	mainProv := &mockProvider{name: "main", response: "Synthesized from retry."}
+
+	p := New(Config{
+		MainProvider:  mainProv,
+		PlannerSpecs:  []PlannerSpec{{Provider: plannerProv, Model: "gemini-3-pro-preview"}},
+		Registry:      newTestRegistry(),
+		WorkDir:       "/tmp/test",
+		MaxTokens:     4096,
+		MaxIterations: 9,
+	})
+
+	events := p.Run(context.Background(), []message.Message{message.NewUserMessage("sess-1", "plan this")}, "sess-1")
+
+	var plannerDone *agent.Event
+	for ev := range events {
+		if ev.Type == agent.EventPlannerDone {
+			copyEv := ev
+			plannerDone = &copyEv
+		}
+	}
+
+	if plannerDone == nil {
+		t.Fatal("expected planner done event")
+	}
+	if plannerDone.PlannerError != "" {
+		t.Fatalf("expected planner retry to succeed, got error: %s", plannerDone.PlannerError)
+	}
+	if plannerDone.PlannerPlan != "Recovered plan after no-tools retry." {
+		t.Fatalf("unexpected planner plan: %q", plannerDone.PlannerPlan)
+	}
+
+	reqs := plannerProv.Requests()
+	if len(reqs) != 2 {
+		t.Fatalf("expected 2 planner calls (initial + retry), got %d", len(reqs))
+	}
+	if len(reqs[0].Tools) == 0 {
+		t.Fatal("expected first planner attempt to include tools")
+	}
+	if len(reqs[1].Tools) != 0 {
+		t.Fatal("expected no-tools retry to disable tools")
+	}
+	if !strings.Contains(reqs[1].SystemPrompt, plannerNoToolsRetryInstruction) {
+		t.Fatal("expected retry prompt to include explicit no-tools retry instruction")
+	}
+}
+
+func TestPlannerRun_EmptyPlannerResponseAfterRetryFailsPlanner(t *testing.T) {
+	plannerProv := &alwaysEmptyProvider{name: "always-empty"}
+	mainProv := &mockProvider{name: "main", response: "should not run"}
+
+	p := New(Config{
+		MainProvider:  mainProv,
+		PlannerSpecs:  []PlannerSpec{{Provider: plannerProv, Model: "gemini-3-pro-preview"}},
+		Registry:      newTestRegistry(),
+		WorkDir:       "/tmp/test",
+		MaxTokens:     4096,
+		MaxIterations: 9,
+	})
+
+	events := p.Run(context.Background(), []message.Message{message.NewUserMessage("sess-1", "plan this")}, "sess-1")
+
+	var (
+		plannerError string
+		gotAgentErr  bool
+		gotAgentDone bool
+	)
+
+	for ev := range events {
+		switch ev.Type {
+		case agent.EventPlannerDone:
+			plannerError = ev.PlannerError
+		case agent.EventAgentError:
+			gotAgentErr = true
+		case agent.EventAgentDone:
+			gotAgentDone = true
+		}
+	}
+
+	if !gotAgentErr {
+		t.Fatal("expected agent error when planner remains empty after retry")
+	}
+	if gotAgentDone {
+		t.Fatal("did not expect agent done event when all planners fail")
+	}
+	if !strings.Contains(plannerError, "empty response") {
+		t.Fatalf("expected planner error to mention empty response, got %q", plannerError)
+	}
+	if plannerProv.Calls() != 2 {
+		t.Fatalf("expected 2 planner attempts, got %d", plannerProv.Calls())
 	}
 }
 

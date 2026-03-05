@@ -77,6 +77,12 @@ var (
 	plannerDoneStyle = lipgloss.NewStyle().
 				Foreground(colorSuccess)
 
+	plannerWarningStyle = lipgloss.NewStyle().
+				Foreground(colorWarning)
+
+	plannerErrorStyle = lipgloss.NewStyle().
+				Foreground(colorError)
+
 	plannerModelStyle = lipgloss.NewStyle().
 				Foreground(colorAssistant).
 				Bold(true)

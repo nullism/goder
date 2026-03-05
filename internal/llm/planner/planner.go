@@ -26,6 +26,8 @@ type PlannerSpec struct {
 // entire planning flow.
 const plannerTimeout = 5 * time.Minute
 
+const plannerNoToolsRetryInstruction = "IMPORTANT: Your previous response was empty. Do not call tools. Return a concrete plan directly in assistant message content using the required output format."
+
 // plannerResult holds the output from a single planning agent.
 type plannerResult struct {
 	Model string
@@ -153,6 +155,7 @@ func (p *Planner) dispatchPlanners(ctx context.Context, history []message.Messag
 	sem := make(chan struct{}, len(p.plannerSpecs))
 
 	plannerPrompt := prompt.BuildPlannerPrompt(p.workDir, p.registry)
+	plannerNoToolsPrompt := prompt.BuildPlannerPrompt(p.workDir, tools.NewRegistry()) + "\n\n" + plannerNoToolsRetryInstruction
 
 	// Build a filtered history with conversational context (user + assistant
 	// text only, no tool calls/results) so planners understand references
@@ -188,6 +191,30 @@ func (p *Planner) dispatchPlanners(ctx context.Context, history []message.Messag
 			})
 
 			planText, planTokens, err := ag.RunSyncWithHistory(planCtx, contextHistory, sessionID)
+			if err == nil && strings.TrimSpace(planText) == "" {
+				retryAgent := agent.New(agent.Config{
+					Provider:      spec.Provider,
+					Registry:      tools.NewRegistry(), // explicit no-tools retry for empty planner outputs
+					PermSvc:       nil,
+					WorkDir:       p.workDir,
+					Model:         spec.Model,
+					MaxTokens:     p.maxTokens,
+					MaxIterations: p.maxIterations / 3,
+					SystemPrompt:  plannerNoToolsPrompt,
+				})
+
+				retryText, retryTokens, retryErr := retryAgent.RunSyncWithHistory(planCtx, contextHistory, sessionID)
+				planTokens += retryTokens
+
+				switch {
+				case retryErr != nil:
+					err = fmt.Errorf("planner returned empty response; no-tools retry failed: %w", retryErr)
+				case strings.TrimSpace(retryText) == "":
+					err = fmt.Errorf("planner returned empty response after no-tools retry")
+				default:
+					planText = retryText
+				}
+			}
 			results[idx] = plannerResult{
 				Model: spec.Model,
 				Plan:  planText,
@@ -198,7 +225,7 @@ func (p *Planner) dispatchPlanners(ctx context.Context, history []message.Messag
 				events <- agent.Event{
 					Type:          agent.EventPlannerDone,
 					PlannerModel:  spec.Model,
-					PlannerPlan:   fmt.Sprintf("Error: %s", err.Error()),
+					PlannerError:  err.Error(),
 					PlannerTokens: planTokens,
 				}
 			} else {

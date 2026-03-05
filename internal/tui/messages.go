@@ -34,6 +34,7 @@ type DisplayMessage struct {
 	IsPlannerDone  bool
 	PlannerModel   string
 	PlannerPlan    string
+	PlannerError   string
 }
 
 // MessageList holds the conversation display state.
@@ -223,7 +224,7 @@ func (ml *MessageList) AddPlannerStart(model string) {
 }
 
 // AddPlannerDone adds a planning agent completion indicator message.
-func (ml *MessageList) AddPlannerDone(model, plan string) {
+func (ml *MessageList) AddPlannerDone(model, plan, plannerErr string) {
 	wasAtBottom := ml.offset == 0
 
 	ml.messages = append(ml.messages, DisplayMessage{
@@ -232,6 +233,7 @@ func (ml *MessageList) AddPlannerDone(model, plan string) {
 		IsPlannerDone: true,
 		PlannerModel:  model,
 		PlannerPlan:   plan,
+		PlannerError:  plannerErr,
 	})
 
 	if wasAtBottom {
@@ -319,15 +321,26 @@ func renderDisplayMessage(msg DisplayMessage, width int) string {
 	// Planner done message
 	if msg.IsPlannerDone {
 		model := plannerModelStyle.Render(msg.PlannerModel)
-		label := plannerDoneStyle.Render(fmt.Sprintf("  > [%s] plan complete", model))
-		if msg.PlannerPlan != "" {
-			planPreview := msg.PlannerPlan
-			if len(planPreview) > 200 {
-				planPreview = planPreview[:200] + "..."
+		if msg.PlannerError != "" {
+			label := plannerErrorStyle.Render(fmt.Sprintf("  > [%s] plan failed", model))
+			errPreview := msg.PlannerError
+			if len(errPreview) > 200 {
+				errPreview = errPreview[:200] + "..."
 			}
-			return label + "\n" + dimStyle.Render(fmt.Sprintf("  %s", planPreview))
+			return label + "\n" + dimStyle.Render(fmt.Sprintf("  %s", errPreview))
 		}
-		return label
+
+		if strings.TrimSpace(msg.PlannerPlan) == "" {
+			label := plannerWarningStyle.Render(fmt.Sprintf("  > [%s] no plan output", model))
+			return label + "\n" + dimStyle.Render("  Planner returned an empty response.")
+		}
+
+		label := plannerDoneStyle.Render(fmt.Sprintf("  > [%s] plan complete", model))
+		planPreview := msg.PlannerPlan
+		if len(planPreview) > 200 {
+			planPreview = planPreview[:200] + "..."
+		}
+		return label + "\n" + dimStyle.Render(fmt.Sprintf("  %s", planPreview))
 	}
 
 	// Tool call message

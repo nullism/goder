@@ -517,7 +517,7 @@ func (m Model) handleAgentEvent(event agent.Event) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case agent.EventPlannerDone:
-		m.msgs.AddPlannerDone(event.PlannerModel, event.PlannerPlan)
+		m.msgs.AddPlannerDone(event.PlannerModel, event.PlannerPlan, event.PlannerError)
 		if event.PlannerTokens > 0 && event.PlannerModel != "" {
 			m.tokenTotal += event.PlannerTokens
 			if m.tokenTotalByModel == nil {

@@ -490,23 +490,23 @@ type chatChoice struct {
 
 // chatDelta holds the incremental content in a streaming chunk.
 type chatDelta struct {
-	Role      string          `json:"role,omitempty"`
-	Content   string          `json:"content,omitempty"`
+	Role      *string         `json:"role,omitempty"`
+	Content   *string         `json:"content,omitempty"`
 	ToolCalls []chatToolDelta `json:"tool_calls,omitempty"`
 }
 
 // chatToolDelta represents a tool call delta in streaming.
 type chatToolDelta struct {
 	Index    int               `json:"index"`
-	ID       string            `json:"id,omitempty"`
-	Type     string            `json:"type,omitempty"`
+	ID       *string           `json:"id,omitempty"`
+	Type     *string           `json:"type,omitempty"`
 	Function chatFunctionDelta `json:"function,omitempty"`
 }
 
 // chatFunctionDelta holds incremental function call data.
 type chatFunctionDelta struct {
-	Name      string `json:"name,omitempty"`
-	Arguments string `json:"arguments,omitempty"`
+	Name      *string `json:"name,omitempty"`
+	Arguments *string `json:"arguments,omitempty"`
 }
 
 // chatUsage holds token usage information.
@@ -664,6 +664,49 @@ func (p *CopilotProvider) processStream(ctx context.Context, body io.Reader, eve
 		started   bool
 	}
 	toolCalls := make(map[int]*toolCallState)
+	var latestUsage *chatUsage
+
+	emitToolCallStart := func(index int, state *toolCallState) {
+		if state.started || state.name == "" {
+			return
+		}
+		if state.id == "" {
+			state.id = fmt.Sprintf("call_%d", index)
+		}
+		state.started = true
+		events <- StreamEvent{
+			Type:         EventToolCallStart,
+			ToolCallID:   state.id,
+			ToolCallName: state.name,
+		}
+	}
+
+	finalizeToolCalls := func() {
+		for idx, state := range toolCalls {
+			emitToolCallStart(idx, state)
+			if state.started {
+				events <- StreamEvent{
+					Type:          EventToolCallEnd,
+					ToolCallID:    state.id,
+					ToolCallName:  state.name,
+					ToolCallInput: state.arguments.String(),
+				}
+			}
+			delete(toolCalls, idx)
+		}
+	}
+
+	emitDone := func() {
+		usage := Usage{}
+		if latestUsage != nil {
+			usage = Usage{
+				InputTokens:  latestUsage.PromptTokens,
+				OutputTokens: latestUsage.CompletionTokens,
+				TotalTokens:  latestUsage.TotalTokens,
+			}
+		}
+		events <- StreamEvent{Type: EventDone, Usage: usage}
+	}
 
 	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
@@ -689,19 +732,8 @@ func (p *CopilotProvider) processStream(ctx context.Context, body io.Reader, eve
 
 		// End of stream marker.
 		if data == "[DONE]" {
-			// Finalize any remaining tool calls.
-			for idx, state := range toolCalls {
-				if state.started {
-					events <- StreamEvent{
-						Type:          EventToolCallEnd,
-						ToolCallID:    state.id,
-						ToolCallName:  state.name,
-						ToolCallInput: state.arguments.String(),
-					}
-				}
-				delete(toolCalls, idx)
-			}
-			events <- StreamEvent{Type: EventDone}
+			finalizeToolCalls()
+			emitDone()
 			return
 		}
 
@@ -710,40 +742,25 @@ func (p *CopilotProvider) processStream(ctx context.Context, body io.Reader, eve
 			continue // skip malformed chunks
 		}
 
-		// Handle usage info (sent with stream_options.include_usage).
 		if chunk.Usage != nil {
-			// Usage comes in a final chunk; we'll include it with EventDone below.
-			// Finalize any remaining tool calls.
-			for idx, state := range toolCalls {
-				if state.started {
-					events <- StreamEvent{
-						Type:          EventToolCallEnd,
-						ToolCallID:    state.id,
-						ToolCallName:  state.name,
-						ToolCallInput: state.arguments.String(),
-					}
-				}
-				delete(toolCalls, idx)
+			latestUsage = chunk.Usage
+			// Some Copilot models include usage on every chunk. Only treat usage as
+			// terminal when there are no choices to process.
+			if len(chunk.Choices) == 0 {
+				finalizeToolCalls()
+				emitDone()
+				return
 			}
-			events <- StreamEvent{
-				Type: EventDone,
-				Usage: Usage{
-					InputTokens:  chunk.Usage.PromptTokens,
-					OutputTokens: chunk.Usage.CompletionTokens,
-					TotalTokens:  chunk.Usage.TotalTokens,
-				},
-			}
-			return
 		}
 
 		for _, choice := range chunk.Choices {
 			delta := choice.Delta
 
 			// Text content.
-			if delta.Content != "" {
+			if delta.Content != nil && *delta.Content != "" {
 				events <- StreamEvent{
 					Type: EventTextDelta,
-					Text: delta.Content,
+					Text: *delta.Content,
 				}
 			}
 
@@ -756,31 +773,24 @@ func (p *CopilotProvider) processStream(ctx context.Context, body io.Reader, eve
 				}
 
 				// First chunk for this tool call includes id and name.
-				if tcDelta.ID != "" {
-					state.id = tcDelta.ID
+				if tcDelta.ID != nil && *tcDelta.ID != "" {
+					state.id = *tcDelta.ID
 				}
-				if tcDelta.Function.Name != "" {
-					state.name = tcDelta.Function.Name
+				if tcDelta.Function.Name != nil && *tcDelta.Function.Name != "" {
+					state.name = *tcDelta.Function.Name
 				}
 
-				// Emit start event once we have id and name.
-				if !state.started && state.id != "" && state.name != "" {
-					state.started = true
-					events <- StreamEvent{
-						Type:         EventToolCallStart,
-						ToolCallID:   state.id,
-						ToolCallName: state.name,
-					}
-				}
+				emitToolCallStart(tcDelta.Index, state)
 
 				// Accumulate arguments.
-				if tcDelta.Function.Arguments != "" {
-					state.arguments.WriteString(tcDelta.Function.Arguments)
+				if tcDelta.Function.Arguments != nil && *tcDelta.Function.Arguments != "" {
+					state.arguments.WriteString(*tcDelta.Function.Arguments)
+					emitToolCallStart(tcDelta.Index, state)
 					events <- StreamEvent{
 						Type:          EventToolCallDelta,
 						ToolCallID:    state.id,
 						ToolCallName:  state.name,
-						ToolCallInput: tcDelta.Function.Arguments,
+						ToolCallInput: *tcDelta.Function.Arguments,
 					}
 				}
 			}
@@ -789,18 +799,7 @@ func (p *CopilotProvider) processStream(ctx context.Context, body io.Reader, eve
 			if choice.FinishReason != nil {
 				switch *choice.FinishReason {
 				case "tool_calls", "stop":
-					// Finalize all pending tool calls.
-					for idx, state := range toolCalls {
-						if state.started {
-							events <- StreamEvent{
-								Type:          EventToolCallEnd,
-								ToolCallID:    state.id,
-								ToolCallName:  state.name,
-								ToolCallInput: state.arguments.String(),
-							}
-						}
-						delete(toolCalls, idx)
-					}
+					finalizeToolCalls()
 				}
 			}
 		}
@@ -811,8 +810,9 @@ func (p *CopilotProvider) processStream(ctx context.Context, body io.Reader, eve
 		return
 	}
 
-	// If we got here without [DONE] or usage, emit done anyway.
-	events <- StreamEvent{Type: EventDone}
+	// If we got here without [DONE], emit done anyway.
+	finalizeToolCalls()
+	emitDone()
 }
 
 // --- Responses API implementation ---

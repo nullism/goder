@@ -60,6 +60,7 @@ type Event struct {
 	PlanPhase     string // human-readable phase description (EventPlanningPhase)
 	PlannerModel  string // which model handled this planner (EventPlannerStart/Done)
 	PlannerPlan   string // completed planner plan text (EventPlannerDone)
+	PlannerError  string // planner error text if planner failed (EventPlannerDone)
 	PlannerTokens int    // total tokens consumed by this planner (EventPlannerDone)
 }
 

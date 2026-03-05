@@ -57,6 +57,7 @@ If `agents.main` is omitted, the main agent falls back to the top-level `provide
 ### Planning Lifecycle
 
 1. **Dispatch** — All planning agents receive the full user request concurrently. Each planner runs with a read-only tool registry (via `Registry.ReadOnly()`) containing only non-destructive tools (`glob`, `grep`, `view`, `ls`, `fetch`). Planners run with `maxIterations/3` budget.
+   - If a planner returns an empty text response, goder retries that planner once with tools disabled and an explicit instruction to return a plain-text plan. If the retry is still empty, that planner is marked as failed.
 
 2. **Synthesis** — The main agent's provider receives the original user request plus all planner outputs, and synthesizes them into a single coherent, unified plan. This plan is streamed to the TUI as regular text.
 
@@ -94,6 +95,7 @@ The agent communicates with the TUI via typed events sent over a channel:
 - `PersistMessage` — signals the TUI/session to persist a message
 - `PlanningPhase` — phase transition in the planning flow
 - `PlannerStart` / `PlannerDone` — planning agent lifecycle
+  - `PlannerDone` carries either planner plan text or planner error text for per-agent status display
 
 ## Tools
 
