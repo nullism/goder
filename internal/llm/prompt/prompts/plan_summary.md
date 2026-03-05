@@ -8,6 +8,7 @@ Given the latest main-agent draft and reviewer outcome, produce a concise final 
 
 - Preserve the intent of the agreed plan.
 - Clearly enumerate proposed file changes.
+- State clearly if reviewer was skipped because the plan was classified as simple.
 - Mention any unresolved concerns if reviewer approval was not reached.
 - Keep the output concise and actionable.
 

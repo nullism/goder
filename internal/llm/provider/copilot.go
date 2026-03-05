@@ -490,8 +490,9 @@ type chatChoice struct {
 
 // chatDelta holds the incremental content in a streaming chunk.
 type chatDelta struct {
-	Role      *string         `json:"role,omitempty"`
-	Content   *string         `json:"content,omitempty"`
+	Role *string `json:"role,omitempty"`
+	// Content can be either a string, null, or structured content parts.
+	Content   json.RawMessage `json:"content,omitempty"`
 	ToolCalls []chatToolDelta `json:"tool_calls,omitempty"`
 }
 
@@ -724,11 +725,10 @@ func (p *CopilotProvider) processStream(ctx context.Context, body io.Reader, eve
 			continue
 		}
 
-		if !strings.HasPrefix(line, "data: ") {
+		data, ok := parseSSEDataLine(line)
+		if !ok {
 			continue
 		}
-
-		data := strings.TrimPrefix(line, "data: ")
 
 		// End of stream marker.
 		if data == "[DONE]" {
@@ -757,10 +757,10 @@ func (p *CopilotProvider) processStream(ctx context.Context, body io.Reader, eve
 			delta := choice.Delta
 
 			// Text content.
-			if delta.Content != nil && *delta.Content != "" {
+			if text := extractChatDeltaText(delta.Content); text != "" {
 				events <- StreamEvent{
 					Type: EventTextDelta,
-					Text: *delta.Content,
+					Text: text,
 				}
 			}
 
@@ -969,11 +969,11 @@ func (p *CopilotProvider) processResponsesStream(ctx context.Context, body io.Re
 			continue
 		}
 
-		if !strings.HasPrefix(line, "data: ") {
+		data, ok := parseSSEDataLine(line)
+		if !ok {
 			continue
 		}
 
-		data := strings.TrimPrefix(line, "data: ")
 		if data == "[DONE]" {
 			events <- StreamEvent{Type: EventDone}
 			return
@@ -1085,4 +1085,51 @@ func (p *CopilotProvider) processResponsesStream(ctx context.Context, body io.Re
 	}
 
 	events <- StreamEvent{Type: EventDone}
+}
+
+func parseSSEDataLine(line string) (string, bool) {
+	if !strings.HasPrefix(line, "data:") {
+		return "", false
+	}
+	data := strings.TrimPrefix(line, "data:")
+	if strings.HasPrefix(data, " ") {
+		data = data[1:]
+	}
+	return data, true
+}
+
+func extractChatDeltaText(content json.RawMessage) string {
+	trimmed := bytes.TrimSpace(content)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return ""
+	}
+
+	var decoded any
+	if err := json.Unmarshal(trimmed, &decoded); err != nil {
+		return ""
+	}
+
+	var out strings.Builder
+	appendTextContent(&out, decoded)
+	return out.String()
+}
+
+func appendTextContent(out *strings.Builder, v any) {
+	switch val := v.(type) {
+	case string:
+		out.WriteString(val)
+	case []any:
+		for _, item := range val {
+			appendTextContent(out, item)
+		}
+	case map[string]any:
+		if text, ok := val["text"].(string); ok {
+			out.WriteString(text)
+		}
+		for _, key := range []string{"content", "parts", "items"} {
+			if nested, ok := val[key]; ok {
+				appendTextContent(out, nested)
+			}
+		}
+	}
 }

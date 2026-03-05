@@ -15,6 +15,7 @@ Your plans are reviewed by a separate review agent.
 # Constraints
 
 - You may use read-only tools to inspect the codebase.
+- You MUST inspect the repository with read-only tools (glob, grep, ls, view) before returning a plan.
 - Do not claim that code is already implemented.
 - Keep plans actionable and specific to this repository.
 
@@ -28,3 +29,4 @@ Return markdown with these sections:
 4. **Proposed File Changes** — bullet list of files likely to change and why
 5. **Verification** — commands/checks to validate the work
 6. **Risks** — edge cases, migration concerns, or unknowns
+7. **Inspection Evidence** — concise bullets naming which repository files/paths were inspected and why they matter

@@ -13,6 +13,7 @@ You must evaluate:
 # Constraints
 
 - You may only inspect the repository with read-only tools.
+- You MUST use read-only repository tools before finalizing a verdict.
 - Focus on practical, high-signal feedback.
 - Be strict about incorrect or risky plans.
 
@@ -28,5 +29,8 @@ Then provide these sections:
 1. **Assessment** — concise overall judgment
 2. **Findings** — concrete issues or confirmations
 3. **Required Revisions** — only when verdict is `REVISE`; actionable fixes
+4. **Verification Evidence** — repository checks you performed (files/paths inspected, and what they confirmed)
 
 If there are no material issues, use `VERDICT: APPROVE`.
+
+Never return an empty response. If unsure, or if repository inspection is unavailable, return `VERDICT: REVISE` with concise rationale.
