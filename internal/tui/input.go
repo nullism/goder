@@ -10,7 +10,10 @@ import (
 	rw "github.com/mattn/go-runewidth"
 )
 
-const maxInputHeight = 6
+const (
+	maxInputHeight  = 6
+	inputSideGutter = 2
+)
 
 // Input wraps a bubbles textarea for the prompt area.
 type Input struct {
@@ -62,7 +65,7 @@ func (i *Input) Update(msg tea.Msg) tea.Cmd {
 	// on Model — any SetWidth call made there is lost when the copy is
 	// discarded. Update's result is kept by the Bubble Tea event loop.
 	if i.width > 0 {
-		i.textArea.SetWidth(i.width - 6)
+		i.textArea.SetWidth(i.textAreaWidth(i.width))
 	}
 
 	// Pre-expand the viewport to max height so that the textarea's internal
@@ -102,14 +105,23 @@ func (i *Input) View(width int) string {
 	// Apply the width to the textarea for this render pass. Even though
 	// this mutation is lost (View runs on a copy of Model), it ensures the
 	// textarea.View() output has the correct width for this frame.
-	i.textArea.SetWidth(width - 6)
+	i.textArea.SetWidth(i.textAreaWidth(width))
 
 	style := inputBorderStyle
 	if i.focused {
 		style = inputFocusedBorderStyle
 	}
 
-	return style.Width(width - 4).Render(i.textArea.View())
+	content := style.Width(i.textArea.Width()).Render(i.textArea.View())
+	return lipgloss.PlaceHorizontal(width, lipgloss.Center, content)
+}
+
+func (i *Input) textAreaWidth(totalWidth int) int {
+	innerWidth := totalWidth - (inputSideGutter * 2) - inputBorderStyle.GetHorizontalFrameSize()
+	if innerWidth < 1 {
+		return 1
+	}
+	return innerWidth
 }
 
 // Value returns the current text in the input.

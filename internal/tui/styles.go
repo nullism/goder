@@ -93,12 +93,12 @@ var (
 	inputBorderStyle = lipgloss.NewStyle().
 				Border(lipgloss.RoundedBorder()).
 				BorderForeground(colorBorder).
-				Padding(0, 1)
+				Padding(0, 0)
 
 	inputFocusedBorderStyle = lipgloss.NewStyle().
 				Border(lipgloss.RoundedBorder()).
 				BorderForeground(colorPrimary).
-				Padding(0, 1)
+				Padding(0, 0)
 )
 
 // Status bar styles
