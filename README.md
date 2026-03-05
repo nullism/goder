@@ -7,18 +7,21 @@ Goder is a fast agentic TUI in a similar class to OpenCode or Claude Code.
 
 Goder is built with Goder (~70% at the time of this writing).
 
-<img width="1965" height="1214" alt="goder screenshot" src="https://github.com/user-attachments/assets/4f6bb677-de1a-4e8c-9e94-dcd6e2fe22e8" />
+<img width="2701" height="1506" alt="image" src="https://github.com/user-attachments/assets/40f4460d-67fb-4609-8eea-d5b4d4a1621c" />
+
 
 ## Differences with other TUIs
 
-1. Written in Go instead of Javascript.
-2. Does not use a render loop or React in the terminal.
-3. Does not use mouse capture or alt screens.
-   - Last output page is retained in terminal after exiting.
-4. Very fast.
-   - At the time of this writing, uses about 1/3 memory and 1/4th the CPU of others.
-5. Linear and transparent output.
-  - Tool call output is visible.
+1. Uses **multiple different planning agents** - like a panel of experts.
+2. Written in Go instead of Javascript.
+3. Does not use a render loop or React in the terminal.
+4. Does not use mouse capture or alt screens.
+    - Last output page is retained in terminal after exiting.
+6. Very fast.
+    - At the time of this writing, uses about 1/3 memory and 1/4th the CPU of others.
+7. Linear and transparent output.
+    - Tool call output is visible.
+
 
 ## Installation
 
