@@ -4,61 +4,52 @@ import (
 	"context"
 	"fmt"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/nullism/goder/internal/llm/agent"
 	"github.com/nullism/goder/internal/llm/prompt"
 	"github.com/nullism/goder/internal/llm/provider"
 	"github.com/nullism/goder/internal/message"
-	"github.com/nullism/goder/internal/permission"
 	"github.com/nullism/goder/internal/tools"
 )
 
-// PlannerSpec specifies a provider+model pair for a planning agent.
-type PlannerSpec struct {
+// ReviewerSpec specifies a provider+model pair for the review agent.
+type ReviewerSpec struct {
 	Provider provider.Provider
 	Model    string
 }
 
-// plannerTimeout is the maximum time a single planning agent can run before
-// being cancelled. This prevents one slow/hung planner from blocking the
-// entire planning flow.
-const plannerTimeout = 5 * time.Minute
+const (
+	reviewRoundTimeout  = 5 * time.Minute
+	defaultReviewRounds = 3
+	verdictApprove      = "APPROVE"
+	verdictRevise       = "REVISE"
+)
 
-const plannerNoToolsRetryInstruction = "IMPORTANT: Your previous response was empty. Do not call tools. Return a concrete plan directly in assistant message content using the required output format."
-
-// plannerResult holds the output from a single planning agent.
-type plannerResult struct {
-	Model string
-	Plan  string
-	Err   error
-}
-
-// Planner coordinates the planning flow: dispatch planning agents
-// concurrently, collect their plans, then synthesize them into a
-// unified plan via the main agent's provider.
+// Planner coordinates the reviewed planning flow:
+// main draft -> reviewer critique -> main revision (iterative rounds)
+// followed by a final summary for user approval.
 type Planner struct {
 	mainProvider  provider.Provider
-	plannerSpecs  []PlannerSpec
+	reviewerSpec  *ReviewerSpec
 	registry      *tools.Registry
-	permSvc       *permission.Service
 	workDir       string
 	mainModel     string
 	maxTokens     int
 	maxIterations int
+	reviewRounds  int
 }
 
 // Config holds planner construction parameters.
 type Config struct {
 	MainProvider  provider.Provider
-	PlannerSpecs  []PlannerSpec
+	ReviewerSpec  *ReviewerSpec
 	Registry      *tools.Registry
-	PermSvc       *permission.Service
 	WorkDir       string
 	MainModel     string
 	MaxTokens     int
 	MaxIterations int
+	ReviewRounds  int
 }
 
 // New creates a new Planner.
@@ -67,21 +58,24 @@ func New(cfg Config) *Planner {
 	if maxIter <= 0 {
 		maxIter = agent.DefaultMaxIterations
 	}
+	rounds := cfg.ReviewRounds
+	if rounds <= 0 {
+		rounds = defaultReviewRounds
+	}
+
 	return &Planner{
 		mainProvider:  cfg.MainProvider,
-		plannerSpecs:  cfg.PlannerSpecs,
+		reviewerSpec:  cfg.ReviewerSpec,
 		registry:      cfg.Registry,
-		permSvc:       cfg.PermSvc,
 		workDir:       cfg.WorkDir,
 		mainModel:     cfg.MainModel,
 		maxTokens:     cfg.MaxTokens,
 		maxIterations: maxIter,
+		reviewRounds:  rounds,
 	}
 }
 
-// Run executes the planning flow: dispatch planning agents → collect plans →
-// synthesize into a unified plan. It returns a channel of agent.Event that
-// the TUI can consume identically to a regular agent run.
+// Run executes the reviewed planning flow and returns a channel of agent.Event.
 func (p *Planner) Run(ctx context.Context, history []message.Message, sessionID string) <-chan agent.Event {
 	events := make(chan agent.Event, 64)
 
@@ -94,217 +88,251 @@ func (p *Planner) Run(ctx context.Context, history []message.Message, sessionID 
 }
 
 func (p *Planner) run(ctx context.Context, history []message.Message, sessionID string, events chan<- agent.Event) {
-	// ── Phase 1: Dispatch Planning Agents ────────────────────────────
-	modelList := make([]string, len(p.plannerSpecs))
-	for i, ps := range p.plannerSpecs {
-		modelList[i] = ps.Model
+	if p.reviewerSpec == nil || p.reviewerSpec.Provider == nil || p.reviewerSpec.Model == "" {
+		events <- agent.Event{Type: agent.EventAgentError, Error: fmt.Errorf("review agent is not configured")}
+		return
 	}
+
 	events <- agent.Event{
 		Type:      agent.EventPlanningPhase,
-		PlanPhase: fmt.Sprintf("Dispatching to %d planning agents [%s]...", len(p.plannerSpecs), strings.Join(modelList, ", ")),
+		PlanPhase: fmt.Sprintf("Starting plan-review loop (main=%s, reviewer=%s, rounds=%d)...", p.mainModel, p.reviewerSpec.Model, p.reviewRounds),
 	}
 
-	results := p.dispatchPlanners(ctx, history, sessionID, events)
+	contextHistory := filterHistoryForContext(history)
 
-	// Check if all planners failed
-	allFailed := true
-	for _, r := range results {
-		if r.Err == nil {
-			allFailed = false
+	var currentDraft string
+	var reviewerFeedback string
+	var reviewerVerdict string
+	agreed := false
+
+	for round := 1; round <= p.reviewRounds; round++ {
+		events <- agent.Event{Type: agent.EventPlanningPhase, PlanPhase: fmt.Sprintf("Round %d/%d: drafting plan...", round, p.reviewRounds)}
+		events <- agent.Event{Type: agent.EventPlannerStart, PlannerModel: "main:" + p.mainModel}
+
+		draft, draftTokens, err := p.generateDraft(ctx, contextHistory, sessionID, round, currentDraft, reviewerFeedback)
+		if err != nil {
+			events <- agent.Event{Type: agent.EventAgentError, Error: fmt.Errorf("main planning round %d failed: %w", round, err)}
+			return
+		}
+		currentDraft = draft
+		events <- agent.Event{
+			Type:          agent.EventPlannerDone,
+			PlannerModel:  "main:" + p.mainModel,
+			PlannerPlan:   draft,
+			PlannerTokens: draftTokens,
+		}
+
+		events <- agent.Event{Type: agent.EventPlanningPhase, PlanPhase: fmt.Sprintf("Round %d/%d: reviewing draft...", round, p.reviewRounds)}
+		events <- agent.Event{Type: agent.EventPlannerStart, PlannerModel: "reviewer:" + p.reviewerSpec.Model}
+
+		reviewText, verdict, reviewTokens, err := p.reviewDraft(ctx, contextHistory, sessionID, round, draft)
+		if err != nil {
+			events <- agent.Event{
+				Type:          agent.EventPlannerDone,
+				PlannerModel:  "reviewer:" + p.reviewerSpec.Model,
+				PlannerError:  err.Error(),
+				PlannerTokens: reviewTokens,
+			}
+			events <- agent.Event{Type: agent.EventAgentError, Error: fmt.Errorf("review round %d failed: %w", round, err)}
+			return
+		}
+
+		reviewerFeedback = reviewText
+		reviewerVerdict = verdict
+		events <- agent.Event{
+			Type:          agent.EventPlannerDone,
+			PlannerModel:  "reviewer:" + p.reviewerSpec.Model,
+			PlannerPlan:   reviewText,
+			PlannerTokens: reviewTokens,
+		}
+
+		if verdict == verdictApprove {
+			agreed = true
+			events <- agent.Event{Type: agent.EventPlanningPhase, PlanPhase: fmt.Sprintf("Reviewer approved the plan in round %d.", round)}
 			break
 		}
 	}
-	if allFailed {
-		events <- agent.Event{
-			Type:  agent.EventAgentError,
-			Error: fmt.Errorf("all planning agents failed"),
-		}
-		return
+
+	if !agreed {
+		events <- agent.Event{Type: agent.EventPlanningPhase, PlanPhase: "Review rounds exhausted without full agreement; summarizing best draft with open concerns..."}
 	}
 
-	// ── Phase 2: Synthesis ──────────────────────────────────────────
-	events <- agent.Event{
-		Type:      agent.EventPlanningPhase,
-		PlanPhase: "Synthesizing plans into a unified response...",
-	}
+	events <- agent.Event{Type: agent.EventPlanningPhase, PlanPhase: "Preparing final plan summary for user approval..."}
 
-	synthText, synthUsage, err := p.synthesize(ctx, history, results, sessionID, events)
+	summaryText, usage, err := p.summarizePlan(ctx, history, currentDraft, reviewerVerdict, reviewerFeedback, agreed, sessionID, events)
 	if err != nil {
-		events <- agent.Event{Type: agent.EventAgentError, Error: fmt.Errorf("synthesis failed: %w", err)}
+		events <- agent.Event{Type: agent.EventAgentError, Error: fmt.Errorf("final plan summary failed: %w", err)}
 		return
 	}
 
-	// Present the synthesized plan as the final response.
-	// The user can then approve, modify, or reject it in their next message.
-	finalMsg := message.NewAssistantMessage(sessionID, synthText, nil)
+	finalMsg := message.NewAssistantMessage(sessionID, summaryText, nil)
 	finalMsg.Model = p.mainModel
-	finalMsg.InputTokens = synthUsage.InputTokens
-	finalMsg.OutputTokens = synthUsage.OutputTokens
-	finalMsg.TotalTokens = synthUsage.TotalTokens
+	finalMsg.InputTokens = usage.InputTokens
+	finalMsg.OutputTokens = usage.OutputTokens
+	finalMsg.TotalTokens = usage.TotalTokens
 	events <- agent.Event{Type: agent.EventAgentDone, FinalMessage: &finalMsg}
 }
 
-// dispatchPlanners runs all planning agents concurrently. Each planner
-// receives the full user request and independently explores the codebase
-// to produce a plan.
-func (p *Planner) dispatchPlanners(ctx context.Context, history []message.Message, sessionID string, events chan<- agent.Event) []plannerResult {
-	results := make([]plannerResult, len(p.plannerSpecs))
+func (p *Planner) generateDraft(ctx context.Context, contextHistory []message.Message, sessionID string, round int, previousDraft, reviewerFeedback string) (string, int, error) {
+	planCtx, cancel := context.WithTimeout(ctx, reviewRoundTimeout)
+	defer cancel()
 
-	var wg sync.WaitGroup
-	// All planners run concurrently
-	sem := make(chan struct{}, len(p.plannerSpecs))
+	ag := agent.New(agent.Config{
+		Provider:      p.mainProvider,
+		Registry:      p.registry.ReadOnly(),
+		PermSvc:       nil,
+		WorkDir:       p.workDir,
+		Model:         p.mainModel,
+		MaxTokens:     p.maxTokens,
+		MaxIterations: p.childIterationBudget(),
+		SystemPrompt:  prompt.BuildPlanDraftPrompt(p.workDir, p.registry),
+	})
 
-	plannerPrompt := prompt.BuildPlannerPrompt(p.workDir, p.registry)
-	plannerNoToolsPrompt := prompt.BuildPlannerPrompt(p.workDir, tools.NewRegistry()) + "\n\n" + plannerNoToolsRetryInstruction
+	history := append([]message.Message{}, contextHistory...)
+	history = append(history, message.NewUserMessage(sessionID, buildDraftInstruction(round, previousDraft, reviewerFeedback)))
 
-	// Build a filtered history with conversational context (user + assistant
-	// text only, no tool calls/results) so planners understand references
-	// to earlier parts of the conversation.
-	contextHistory := filterHistoryForContext(history)
-
-	for i, spec := range p.plannerSpecs {
-		wg.Add(1)
-		sem <- struct{}{} // acquire semaphore slot
-
-		go func(idx int, spec PlannerSpec) {
-			defer wg.Done()
-			defer func() { <-sem }() // release semaphore slot
-
-			// Per-planner timeout so one hung planner can't block the whole flow.
-			planCtx, planCancel := context.WithTimeout(ctx, plannerTimeout)
-			defer planCancel()
-
-			events <- agent.Event{
-				Type:         agent.EventPlannerStart,
-				PlannerModel: spec.Model,
-			}
-
-			ag := agent.New(agent.Config{
-				Provider:      spec.Provider,
-				Registry:      p.registry.ReadOnly(), // planners only get read-only tools
-				PermSvc:       nil,                   // planners don't get permission prompts
-				WorkDir:       p.workDir,
-				Model:         spec.Model,
-				MaxTokens:     p.maxTokens,
-				MaxIterations: p.maxIterations / 3, // budget per planner
-				SystemPrompt:  plannerPrompt,
-			})
-
-			planText, planTokens, err := ag.RunSyncWithHistory(planCtx, contextHistory, sessionID)
-			if err == nil && strings.TrimSpace(planText) == "" {
-				retryAgent := agent.New(agent.Config{
-					Provider:      spec.Provider,
-					Registry:      tools.NewRegistry(), // explicit no-tools retry for empty planner outputs
-					PermSvc:       nil,
-					WorkDir:       p.workDir,
-					Model:         spec.Model,
-					MaxTokens:     p.maxTokens,
-					MaxIterations: p.maxIterations / 3,
-					SystemPrompt:  plannerNoToolsPrompt,
-				})
-
-				retryText, retryTokens, retryErr := retryAgent.RunSyncWithHistory(planCtx, contextHistory, sessionID)
-				planTokens += retryTokens
-
-				switch {
-				case retryErr != nil:
-					err = fmt.Errorf("planner returned empty response; no-tools retry failed: %w", retryErr)
-				case strings.TrimSpace(retryText) == "":
-					err = fmt.Errorf("planner returned empty response after no-tools retry")
-				default:
-					planText = retryText
-				}
-			}
-			results[idx] = plannerResult{
-				Model: spec.Model,
-				Plan:  planText,
-				Err:   err,
-			}
-
-			if err != nil {
-				events <- agent.Event{
-					Type:          agent.EventPlannerDone,
-					PlannerModel:  spec.Model,
-					PlannerError:  err.Error(),
-					PlannerTokens: planTokens,
-				}
-			} else {
-				events <- agent.Event{
-					Type:          agent.EventPlannerDone,
-					PlannerModel:  spec.Model,
-					PlannerPlan:   planText,
-					PlannerTokens: planTokens,
-				}
-			}
-		}(i, spec)
+	text, tokens, err := ag.RunSyncWithHistory(planCtx, history, sessionID)
+	if err != nil {
+		return "", tokens, err
+	}
+	if strings.TrimSpace(text) == "" {
+		return "", tokens, fmt.Errorf("main agent returned an empty plan")
 	}
 
-	wg.Wait()
-	return results
+	return text, tokens, nil
 }
 
-// synthesize makes a final LLM call via the main agent's provider to
-// combine all planning agent plans into a unified response, streaming
-// the result to the TUI.
-func (p *Planner) synthesize(ctx context.Context, history []message.Message, results []plannerResult, sessionID string, events chan<- agent.Event) (string, provider.Usage, error) {
-	// Build the synthesis input with all planner outputs
-	var plansText strings.Builder
-	plansText.WriteString("# Planning Agent Plans\n\n")
-	for i, r := range results {
-		fmt.Fprintf(&plansText, "## Plan from Agent %d (%s)\n\n", i+1, r.Model)
-		if r.Err != nil {
-			fmt.Fprintf(&plansText, "**Status:** FAILED — %s\n\n", r.Err.Error())
-		} else {
-			fmt.Fprintf(&plansText, "%s\n\n", r.Plan)
-		}
+func (p *Planner) reviewDraft(ctx context.Context, contextHistory []message.Message, sessionID string, round int, draft string) (string, string, int, error) {
+	reviewCtx, cancel := context.WithTimeout(ctx, reviewRoundTimeout)
+	defer cancel()
+
+	ag := agent.New(agent.Config{
+		Provider:      p.reviewerSpec.Provider,
+		Registry:      p.registry.ReadOnly(),
+		PermSvc:       nil,
+		WorkDir:       p.workDir,
+		Model:         p.reviewerSpec.Model,
+		MaxTokens:     p.maxTokens,
+		MaxIterations: p.childIterationBudget(),
+		SystemPrompt:  prompt.BuildPlanReviewPrompt(p.workDir, p.registry),
+	})
+
+	history := append([]message.Message{}, contextHistory...)
+	history = append(history, message.NewUserMessage(sessionID, buildReviewInstruction(round, draft)))
+
+	text, tokens, err := ag.RunSyncWithHistory(reviewCtx, history, sessionID)
+	if err != nil {
+		return "", "", tokens, err
+	}
+	if strings.TrimSpace(text) == "" {
+		return "", "", tokens, fmt.Errorf("review agent returned an empty review")
 	}
 
-	// Build synthesis history: filtered conversation context + planner outputs.
-	// Include the full conversational context (user + assistant text) so the
-	// synthesizer understands what was discussed earlier.
-	synthHistory := filterHistoryForContext(history)
-	// Add the planner outputs as a user message for synthesis
-	synthHistory = append(synthHistory, message.NewUserMessage(sessionID,
-		"Here are the plans from the planning agents. Synthesize them into a unified plan.\n\n"+plansText.String()))
+	return text, parseVerdict(text), tokens, nil
+}
 
-	synthPrompt := prompt.BuildSynthesisPrompt(p.workDir)
+func (p *Planner) summarizePlan(ctx context.Context, history []message.Message, draft, verdict, reviewerFeedback string, agreed bool, sessionID string, events chan<- agent.Event) (string, provider.Usage, error) {
+	summaryHistory := filterHistoryForContext(history)
 
-	// Make the synthesis LLM call — no tools, just text synthesis
+	status := "not approved"
+	if agreed {
+		status = "approved"
+	}
+
+	summaryInput := "Create the final plan message for the user based on the reviewed plan loop.\n\n" +
+		"Review status: " + status + "\n" +
+		"Reviewer verdict: " + verdict + "\n\n" +
+		"Latest main-agent draft:\n\n" + draft + "\n\n" +
+		"Latest reviewer feedback:\n\n" + reviewerFeedback
+
+	summaryHistory = append(summaryHistory, message.NewUserMessage(sessionID, summaryInput))
+
 	req := provider.Request{
-		SystemPrompt: synthPrompt,
-		Messages:     synthHistory,
+		SystemPrompt: prompt.BuildPlanSummaryPrompt(p.workDir),
+		Messages:     summaryHistory,
 		Tools:        nil,
 		MaxTokens:    p.maxTokens,
 	}
 
 	streamCh, err := p.mainProvider.SendMessage(ctx, req)
 	if err != nil {
-		return "", provider.Usage{}, fmt.Errorf("synthesis request failed: %w", err)
+		return "", provider.Usage{}, err
 	}
 
-	var finalText strings.Builder
+	var text strings.Builder
 	var usage provider.Usage
 
 	for event := range streamCh {
 		switch event.Type {
 		case provider.EventTextDelta:
-			finalText.WriteString(event.Text)
+			text.WriteString(event.Text)
 			events <- agent.Event{Type: agent.EventStreamText, Text: event.Text}
 		case provider.EventError:
-			return finalText.String(), usage, event.Error
+			return text.String(), usage, event.Error
 		case provider.EventDone:
 			usage = event.Usage
 		}
 	}
 
-	return finalText.String(), usage, nil
+	if strings.TrimSpace(text.String()) == "" {
+		return draft, usage, nil
+	}
+
+	return text.String(), usage, nil
+}
+
+func (p *Planner) childIterationBudget() int {
+	den := p.reviewRounds * 2
+	if den <= 0 {
+		den = 2
+	}
+	budget := p.maxIterations / den
+	if budget < 2 {
+		budget = 2
+	}
+	return budget
+}
+
+func buildDraftInstruction(round int, previousDraft, reviewerFeedback string) string {
+	if round <= 1 {
+		return "Create an actionable implementation plan for the latest user request. Follow your required output format and include concrete proposed file changes."
+	}
+
+	return "Revise the implementation plan based on reviewer feedback and return a complete replacement plan.\n\n" +
+		"Previous plan:\n\n" + previousDraft + "\n\n" +
+		"Reviewer feedback:\n\n" + reviewerFeedback
+}
+
+func buildReviewInstruction(round int, draft string) string {
+	return fmt.Sprintf("Review round %d. Evaluate the draft plan below for intent alignment, maintainability, and obvious security risks. Use the exact verdict contract.\n\nDraft plan:\n\n%s", round, draft)
+}
+
+func parseVerdict(review string) string {
+	upper := strings.ToUpper(review)
+	lines := strings.Split(upper, "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "VERDICT:") {
+			continue
+		}
+		verdict := strings.TrimSpace(strings.TrimPrefix(line, "VERDICT:"))
+		if strings.HasPrefix(verdict, verdictApprove) {
+			return verdictApprove
+		}
+		if strings.HasPrefix(verdict, verdictRevise) {
+			return verdictRevise
+		}
+	}
+
+	if strings.Contains(upper, "VERDICT: APPROVE") {
+		return verdictApprove
+	}
+
+	return verdictRevise
 }
 
 // filterHistoryForContext creates a lightweight version of the conversation
-// history suitable for giving planning agents conversational context. It
-// keeps only user and assistant messages with text content, stripping out
-// tool calls, tool results, and tool-role messages. This preserves the
-// conversational flow without the bulk of file contents and command outputs.
+// history suitable for giving child agents conversational context.
 func filterHistoryForContext(history []message.Message) []message.Message {
 	var filtered []message.Message
 	for _, msg := range history {
@@ -318,8 +346,6 @@ func filterHistoryForContext(history []message.Message) []message.Message {
 				CreatedAt: msg.CreatedAt,
 			})
 		case message.Assistant:
-			// Only include assistant messages that have text content
-			// (skip pure tool-call-only messages with no text).
 			if msg.Content != "" {
 				filtered = append(filtered, message.Message{
 					ID:        msg.ID,
@@ -329,7 +355,6 @@ func filterHistoryForContext(history []message.Message) []message.Message {
 					CreatedAt: msg.CreatedAt,
 				})
 			}
-			// Skip tool-role messages and system messages entirely
 		}
 	}
 	return filtered

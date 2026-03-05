@@ -52,8 +52,8 @@ type Model struct {
 	prov     provider.Provider
 	permSvc  *permission.Service
 
-	// Planning agents
-	plannerSpecs []planner.PlannerSpec
+	// Review agent
+	reviewerSpec *planner.ReviewerSpec
 
 	// Session usage state
 	tokenTotal        int
@@ -64,8 +64,8 @@ type Model struct {
 	thinking        bool                // true while agent is processing
 	streamBuf       string              // accumulates streaming text (plain string to avoid strings.Builder copy panic)
 	permReq         *permission.Request // pending permission request
-	plannerActive   bool                // true while a planner flow is in progress
-	planSynthesized bool                // true after planners finished; next user msg goes to main agent
+	reviewActive    bool                // true while reviewed planning flow is in progress
+	planSynthesized bool                // true after reviewed plan is produced; next user msg goes to main agent
 
 	// Settings overlay
 	settings     Settings
@@ -81,7 +81,7 @@ type Model struct {
 }
 
 // New creates and returns a new Model.
-func New(cfg config.Config, database *db.DB, sessions *session.Service, registry *tools.Registry, prov provider.Provider, permSvc *permission.Service, plannerSpecs []planner.PlannerSpec) Model {
+func New(cfg config.Config, database *db.DB, sessions *session.Service, registry *tools.Registry, prov provider.Provider, permSvc *permission.Service, reviewerSpec *planner.ReviewerSpec) Model {
 	return Model{
 		keys:         DefaultKeyMap(),
 		input:        NewInput(),
@@ -93,7 +93,7 @@ func New(cfg config.Config, database *db.DB, sessions *session.Service, registry
 		registry:     registry,
 		prov:         prov,
 		permSvc:      permSvc,
-		plannerSpecs: plannerSpecs,
+		reviewerSpec: reviewerSpec,
 		progRef:      &programRef{}, // shared across Bubble Tea value copies
 	}
 }
@@ -104,21 +104,20 @@ func (m *Model) SetProgram(p *tea.Program) {
 	m.progRef.Store(p)
 }
 
-// rebuildPlannerSpecs recreates the planner specs from the current config.
-// Called when planners are added or removed via the settings UI.
-func rebuildPlannerSpecs(cfg config.Config) []planner.PlannerSpec {
-	var specs []planner.PlannerSpec
-	for _, pa := range cfg.Agents.Planners {
-		planProv, err := provider.New(pa.Provider, cfg.APIKeyFor(pa.Provider), pa.Model)
-		if err != nil {
-			continue
-		}
-		specs = append(specs, planner.PlannerSpec{
-			Provider: planProv,
-			Model:    pa.Model,
-		})
+// rebuildReviewerSpec recreates the reviewer spec from current config.
+func rebuildReviewerSpec(cfg config.Config) *planner.ReviewerSpec {
+	if !cfg.ReviewEnabled() {
+		return nil
 	}
-	return specs
+
+	reviewerProvider := cfg.ReviewerAgentProvider()
+	reviewerModel := cfg.ReviewerAgentModel()
+	reviewProv, err := provider.New(reviewerProvider, cfg.APIKeyFor(reviewerProvider), reviewerModel)
+	if err != nil {
+		return nil
+	}
+
+	return &planner.ReviewerSpec{Provider: reviewProv, Model: reviewerModel}
 }
 
 // Init implements tea.Model.
@@ -369,27 +368,27 @@ func (m *Model) submitPrompt(prompt string) tea.Cmd {
 	ctx, cancel := context.WithCancel(context.Background())
 	m.agentCancel = cancel
 
-	// Choose between planner flow and single-agent loop.
-	// After planners have synthesized a plan, the next user message
+	// Choose between reviewed-plan flow and single-agent loop.
+	// After the reviewed plan is produced, the next user message
 	// (e.g. "go ahead") should go to the main agent for execution,
-	// not back to the planners.
+	// not back to the review loop.
 	var eventCh <-chan agent.Event
 
-	if len(m.plannerSpecs) > 0 && !m.planSynthesized {
-		m.plannerActive = true
+	if m.reviewerSpec != nil && !m.planSynthesized {
+		m.reviewActive = true
 		pl := planner.New(planner.Config{
 			MainProvider:  m.prov,
-			PlannerSpecs:  m.plannerSpecs,
+			ReviewerSpec:  m.reviewerSpec,
 			Registry:      m.registry,
-			PermSvc:       m.permSvc,
 			WorkDir:       m.cfg.WorkDir,
 			MainModel:     m.cfg.MainAgentModel(),
 			MaxTokens:     m.cfg.MaxTokens,
 			MaxIterations: m.cfg.MaxIterations,
+			ReviewRounds:  m.cfg.ReviewIterations,
 		})
 		eventCh = pl.Run(ctx, history, sessionID)
 	} else {
-		m.plannerActive = false
+		m.reviewActive = false
 		ag := agent.New(agent.Config{
 			Provider:      m.prov,
 			Registry:      m.registry,
@@ -484,13 +483,13 @@ func (m Model) handleAgentEvent(event agent.Event) (tea.Model, tea.Cmd) {
 		}
 		m.streamBuf = ""
 
-		// Track planning state transitions:
-		// - If the planner flow just finished, mark that the plan has been
-		//   synthesized so the next user message goes to the main agent.
+		// Track reviewed-plan state transitions:
+		// - If the review flow just finished, mark that a plan was produced
+		//   so the next user message goes to the main agent for implementation.
 		// - If the main agent just finished executing (after a prior plan),
-		//   reset so the next fresh task dispatches to planners again.
-		if m.plannerActive {
-			m.plannerActive = false
+		//   reset so the next fresh task dispatches to the review flow again.
+		if m.reviewActive {
+			m.reviewActive = false
 			m.planSynthesized = true
 		} else {
 			m.planSynthesized = false
@@ -591,8 +590,8 @@ func (m Model) handleSettingsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, fetchModelsCmd(context.Background(), tmpProv.ListModels)
 	}
 
-	// Handle transition to planner model selection (trigger fetch)
-	if prevView != settingsViewPlannerModels && m.settings.view == settingsViewPlannerModels {
+	// Handle transition to reviewer model selection (trigger fetch)
+	if prevView != settingsViewAgentReviewerModels && m.settings.view == settingsViewAgentReviewerModels {
 		provName := m.settings.AgentProviderPick()
 		apiKey := m.cfg.APIKeyFor(provName)
 		tmpProv, err := provider.New(provName, apiKey, "")
@@ -601,15 +600,6 @@ func (m Model) handleSettingsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m, fetchModelsCmd(context.Background(), tmpProv.ListModels)
-	}
-
-	// Handle transition to planners list — sync local copy from config
-	if prevView != settingsViewPlanners && m.settings.view == settingsViewPlanners {
-		var entries []agentEntry
-		for _, pa := range m.cfg.Agents.Planners {
-			entries = append(entries, agentEntry{Provider: pa.Provider, Model: pa.Model})
-		}
-		m.settings.SetPlanners(entries)
 	}
 
 	// Handle API key save on enter in API key view
@@ -628,6 +618,9 @@ func (m Model) handleSettingsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.cfg.SetAPIKeyFor(selectedProvider, apiKey)
 		if m.prov != nil && selectedProvider == m.prov.Name() {
 			m.prov.SetAPIKey(apiKey)
+		}
+		if m.reviewerSpec != nil && m.reviewerSpec.Provider != nil && selectedProvider == m.reviewerSpec.Provider.Name() {
+			m.reviewerSpec.Provider.SetAPIKey(apiKey)
 		}
 
 		// Persist to config file
@@ -662,6 +655,25 @@ func (m Model) handleSettingsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 
+	// Handle review rounds save on enter in review rounds view
+	if m.settings.view == settingsViewReviewRounds && msg.String() == "enter" {
+		val := m.settings.ReviewRoundValue()
+		if val == 0 {
+			return m, cmd
+		}
+
+		m.cfg.ReviewIterations = val
+
+		if err := config.Save(m.cfg); err != nil {
+			m.settings.SetFeedback(fmt.Sprintf("Save failed: %s", err.Error()), true)
+			return m, cmd
+		}
+
+		m.settings.SetFeedback(fmt.Sprintf("Review rounds set to %d", val), false)
+		m.settings.view = settingsViewMenu
+		return m, cmd
+	}
+
 	// Handle main agent model selection on enter
 	if m.settings.view == settingsViewAgentMainModels && msg.String() == "enter" {
 		selected := m.settings.SelectedModel()
@@ -684,6 +696,7 @@ func (m Model) handleSettingsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 		m.prov = newProv
+		m.reviewerSpec = rebuildReviewerSpec(m.cfg)
 
 		if err := config.Save(m.cfg); err != nil {
 			m.settings.SetFeedback(fmt.Sprintf("Save failed: %s", err.Error()), true)
@@ -695,56 +708,40 @@ func (m Model) handleSettingsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 
-	// Handle planner model selection on enter (adding a new planner)
-	if m.settings.view == settingsViewPlannerModels && msg.String() == "enter" {
+	// Handle reviewer model selection on enter
+	if m.settings.view == settingsViewAgentReviewerModels && msg.String() == "enter" {
 		selected := m.settings.SelectedModel()
 		if selected == "" {
 			return m, cmd
 		}
 
 		provName := m.settings.AgentProviderPick()
-		newSpec := config.AgentSpec{Provider: provName, Model: selected}
-		m.cfg.Agents.Planners = append(m.cfg.Agents.Planners, newSpec)
-
-		// Rebuild planner specs
-		m.plannerSpecs = rebuildPlannerSpecs(m.cfg)
+		m.cfg.Agents.Reviewer = &config.AgentSpec{Provider: provName, Model: selected}
+		m.reviewerSpec = rebuildReviewerSpec(m.cfg)
 
 		if err := config.Save(m.cfg); err != nil {
 			m.settings.SetFeedback(fmt.Sprintf("Save failed: %s", err.Error()), true)
 			return m, cmd
 		}
 
-		m.settings.SetFeedback(fmt.Sprintf("Added planner %s:%s", provName, selected), false)
-		m.settings.view = settingsViewPlanners
-		// Re-sync planners list
-		var entries []agentEntry
-		for _, pa := range m.cfg.Agents.Planners {
-			entries = append(entries, agentEntry{Provider: pa.Provider, Model: pa.Model})
-		}
-		m.settings.SetPlanners(entries)
+		m.settings.SetFeedback(fmt.Sprintf("Review agent set to %s:%s", provName, selected), false)
+		m.settings.view = settingsViewAgents
 		return m, cmd
 	}
 
-	// Handle planner deletion — detect when the local planners list changed
-	if m.settings.view == settingsViewPlanners && msg.String() == "d" {
-		localPlanners := m.settings.Planners()
-		if len(localPlanners) != len(m.cfg.Agents.Planners) {
-			// Sync config from local copy
-			m.cfg.Agents.Planners = make([]config.AgentSpec, len(localPlanners))
-			for i, p := range localPlanners {
-				m.cfg.Agents.Planners[i] = config.AgentSpec{Provider: p.Provider, Model: p.Model}
-			}
+	// Disable reviewer from reviewer model selection.
+	if m.settings.view == settingsViewAgentReviewerModels && (msg.String() == "d" || msg.String() == "D") {
+		m.cfg.Agents.Reviewer = nil
+		m.reviewerSpec = nil
 
-			// Rebuild planner specs
-			m.plannerSpecs = rebuildPlannerSpecs(m.cfg)
-
-			if err := config.Save(m.cfg); err != nil {
-				m.settings.SetFeedback(fmt.Sprintf("Save failed: %s", err.Error()), true)
-				return m, cmd
-			}
-			m.settings.SetFeedback("Planner removed", false)
+		if err := config.Save(m.cfg); err != nil {
+			m.settings.SetFeedback(fmt.Sprintf("Save failed: %s", err.Error()), true)
 			return m, cmd
 		}
+
+		m.settings.SetFeedback("Review agent disabled", false)
+		m.settings.view = settingsViewAgents
+		return m, cmd
 	}
 
 	return m, cmd
@@ -807,15 +804,15 @@ func (m Model) View() string {
 		inputView = m.renderQuitConfirmDialog()
 	} else if m.settingsOpen {
 		mainAgent := agentEntry{Provider: m.cfg.MainAgentProvider(), Model: m.cfg.MainAgentModel()}
-		var plannerEntries []agentEntry
-		for _, pa := range m.cfg.Agents.Planners {
-			plannerEntries = append(plannerEntries, agentEntry{Provider: pa.Provider, Model: pa.Model})
+		var reviewer *agentEntry
+		if m.cfg.Agents.Reviewer != nil {
+			reviewer = &agentEntry{Provider: m.cfg.ReviewerAgentProvider(), Model: m.cfg.ReviewerAgentModel()}
 		}
 		selectedProvider := m.settings.SelectedProvider()
 		if selectedProvider == "" {
 			selectedProvider = m.cfg.MainAgentProvider()
 		}
-		inputView = m.settings.View(m.width, m.cfg.APIKeyFor(selectedProvider), m.cfg.MaxIterations, mainAgent, plannerEntries)
+		inputView = m.settings.View(m.width, m.cfg.APIKeyFor(selectedProvider), m.cfg.MaxIterations, m.cfg.ReviewIterations, mainAgent, reviewer)
 	} else if m.permReq != nil {
 		inputView = m.renderPermissionDialog()
 	} else if m.thinking {

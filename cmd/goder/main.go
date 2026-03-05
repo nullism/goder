@@ -44,24 +44,16 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Build planning agent specs if configured
-	var plannerSpecs []planner.PlannerSpec
-
-	if cfg.PlanningEnabled() {
-		for _, pa := range cfg.Agents.Planners {
-			planProv, err := provider.New(pa.Provider, cfg.APIKeyFor(pa.Provider), pa.Model)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "warning: skipping planning agent %s:%s: %v\n", pa.Provider, pa.Model, err)
-				continue
-			}
-			plannerSpecs = append(plannerSpecs, planner.PlannerSpec{
-				Provider: planProv,
-				Model:    pa.Model,
-			})
-		}
-
-		if len(plannerSpecs) == 0 {
-			fmt.Fprintf(os.Stderr, "warning: no valid planning agents configured, planning disabled\n")
+	// Build review agent spec if configured
+	var reviewerSpec *planner.ReviewerSpec
+	if cfg.ReviewEnabled() {
+		reviewerProvider := cfg.ReviewerAgentProvider()
+		reviewerModel := cfg.ReviewerAgentModel()
+		reviewProv, err := provider.New(reviewerProvider, cfg.APIKeyFor(reviewerProvider), reviewerModel)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "warning: reviewer disabled (%s:%s): %v\n", reviewerProvider, reviewerModel, err)
+		} else {
+			reviewerSpec = &planner.ReviewerSpec{Provider: reviewProv, Model: reviewerModel}
 		}
 	}
 
@@ -77,7 +69,7 @@ func main() {
 	}
 
 	// Create the TUI model
-	model := tui.New(cfg, database, sessionSvc, registry, prov, permSvc, plannerSpecs)
+	model := tui.New(cfg, database, sessionSvc, registry, prov, permSvc, reviewerSpec)
 
 	// Create the program
 	p := tea.NewProgram(

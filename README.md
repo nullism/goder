@@ -12,7 +12,7 @@ Goder is built with Goder (~70% at the time of this writing).
 
 ## Differences with other TUIs
 
-1. Uses **multiple different planning agents** - like a panel of experts.
+1. Uses a **main + review planning loop** before implementation.
 2. Written in Go instead of Javascript.
 3. Does not use a render loop or React in the terminal.
 4. Does not use mouse capture or alt screens.
@@ -41,5 +41,4 @@ Goder is built with Goder (~70% at the time of this writing).
    ```bash
    mv goder /usr/local/bin/
    ```
-
 

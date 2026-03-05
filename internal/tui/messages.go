@@ -315,14 +315,14 @@ func renderDisplayMessage(msg DisplayMessage, width int) string {
 	// Planner start message
 	if msg.IsPlannerStart {
 		model := plannerModelStyle.Render(msg.PlannerModel)
-		return plannerStartStyle.Render(fmt.Sprintf("  > [%s] planning...", model))
+		return plannerStartStyle.Render(fmt.Sprintf("  > [%s] running...", model))
 	}
 
 	// Planner done message
 	if msg.IsPlannerDone {
 		model := plannerModelStyle.Render(msg.PlannerModel)
 		if msg.PlannerError != "" {
-			label := plannerErrorStyle.Render(fmt.Sprintf("  > [%s] plan failed", model))
+			label := plannerErrorStyle.Render(fmt.Sprintf("  > [%s] step failed", model))
 			errPreview := msg.PlannerError
 			if len(errPreview) > 200 {
 				errPreview = errPreview[:200] + "..."
@@ -331,11 +331,11 @@ func renderDisplayMessage(msg DisplayMessage, width int) string {
 		}
 
 		if strings.TrimSpace(msg.PlannerPlan) == "" {
-			label := plannerWarningStyle.Render(fmt.Sprintf("  > [%s] no plan output", model))
+			label := plannerWarningStyle.Render(fmt.Sprintf("  > [%s] no output", model))
 			return label + "\n" + dimStyle.Render("  Planner returned an empty response.")
 		}
 
-		label := plannerDoneStyle.Render(fmt.Sprintf("  > [%s] plan complete", model))
+		label := plannerDoneStyle.Render(fmt.Sprintf("  > [%s] step complete", model))
 		planPreview := msg.PlannerPlan
 		if len(planPreview) > 200 {
 			planPreview = planPreview[:200] + "..."

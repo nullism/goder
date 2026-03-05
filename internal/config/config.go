@@ -18,16 +18,19 @@ type AgentSpec struct {
 
 // AgentsConfig holds the named agent configuration.
 // The main agent drives the conversation and executes plans.
-// Planning agents independently explore the codebase and produce plans.
+// The reviewer agent critiques plans before user approval.
 type AgentsConfig struct {
 	// Main is the provider+model for the main agent.
 	// Falls back to the top-level Provider/Model if omitted.
 	Main *AgentSpec `json:"main,omitempty"`
 
-	// Planners is the pool of provider+model pairs for planning agents.
-	// Each planner receives the full user request and independently
-	// produces a plan. If empty, planning is disabled and the main
-	// agent operates as a single agent.
+	// Reviewer is the provider+model for the review agent.
+	// If omitted, review mode is disabled and the main agent operates
+	// as a single agent.
+	Reviewer *AgentSpec `json:"reviewer,omitempty"`
+
+	// Planners is kept only for backward compatibility with older
+	// configurations and is ignored in new behavior.
 	Planners []AgentSpec `json:"planners,omitempty"`
 }
 
@@ -58,13 +61,16 @@ type Config struct {
 	// MaxIterations is the maximum number of agent loop iterations before stopping.
 	MaxIterations int `json:"maxIterations"`
 
+	// ReviewIterations is the maximum number of main<->review rounds.
+	ReviewIterations int `json:"reviewIterations"`
+
 	// Debug enables debug logging.
 	Debug bool `json:"debug"`
 
 	// WorkDir is the working directory. Defaults to cwd.
 	WorkDir string `json:"-"`
 
-	// Agents holds the named agent configuration (main + planners).
+	// Agents holds the named agent configuration (main + reviewer).
 	Agents AgentsConfig `json:"agents,omitempty"`
 }
 
@@ -76,12 +82,13 @@ func DefaultConfig() Config {
 	}
 
 	return Config{
-		Provider:      "openai",
-		Model:         "gpt-4o",
-		MaxTokens:     4096,
-		MaxIterations: 50,
-		Shell:         shell,
-		Debug:         false,
+		Provider:         "openai",
+		Model:            "gpt-4o",
+		MaxTokens:        4096,
+		MaxIterations:    50,
+		ReviewIterations: 3,
+		Shell:            shell,
+		Debug:            false,
 	}
 }
 
@@ -140,6 +147,11 @@ func Load() (Config, error) {
 			cfg.MaxIterations = n
 		}
 	}
+	if v := os.Getenv("GODER_REVIEW_ITERATIONS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.ReviewIterations = n
+		}
+	}
 	if v := os.Getenv("GODER_MAIN_PROVIDER"); v != "" {
 		if cfg.Agents.Main == nil {
 			cfg.Agents.Main = &AgentSpec{}
@@ -152,8 +164,27 @@ func Load() (Config, error) {
 		}
 		cfg.Agents.Main.Model = v
 	}
+	if v := os.Getenv("GODER_REVIEWER_PROVIDER"); v != "" {
+		if cfg.Agents.Reviewer == nil {
+			cfg.Agents.Reviewer = &AgentSpec{}
+		}
+		cfg.Agents.Reviewer.Provider = v
+	}
+	if v := os.Getenv("GODER_REVIEWER_MODEL"); v != "" {
+		if cfg.Agents.Reviewer == nil {
+			cfg.Agents.Reviewer = &AgentSpec{}
+		}
+		cfg.Agents.Reviewer.Model = v
+	}
 	if v := os.Getenv("GODER_PLANNING_AGENTS"); v != "" {
 		cfg.Agents.Planners = parsePlannerAgents(v)
+	}
+
+	// Backward compatibility:
+	// - If legacy planners are configured and reviewer is not, use the first planner.
+	if cfg.Agents.Reviewer == nil && len(cfg.Agents.Planners) > 0 {
+		first := cfg.Agents.Planners[0]
+		cfg.Agents.Reviewer = &AgentSpec{Provider: first.Provider, Model: first.Model}
 	}
 
 	// Load API key from provider-specific env var / legacy field.
@@ -264,9 +295,9 @@ func (c Config) DBPath() string {
 	return filepath.Join(c.DataDir, "goder.db")
 }
 
-// PlanningEnabled returns true if planning agents are configured.
-func (c Config) PlanningEnabled() bool {
-	return len(c.Agents.Planners) > 0
+// ReviewEnabled returns true if a reviewer agent is configured.
+func (c Config) ReviewEnabled() bool {
+	return c.Agents.Reviewer != nil && c.ReviewerAgentModel() != ""
 }
 
 // MainAgentProvider returns the provider for the main agent,
@@ -287,8 +318,26 @@ func (c Config) MainAgentModel() string {
 	return c.Model
 }
 
-// parsePlannerAgents parses a comma-separated list of "provider:model" pairs.
-// Example: "copilot:grok-code-fast-1,openai:gpt-4o,copilot:claude-sonnet-4.5"
+// ReviewerAgentProvider returns the provider for the reviewer agent,
+// falling back to the main agent provider if not set.
+func (c Config) ReviewerAgentProvider() string {
+	if c.Agents.Reviewer != nil && c.Agents.Reviewer.Provider != "" {
+		return c.Agents.Reviewer.Provider
+	}
+	return c.MainAgentProvider()
+}
+
+// ReviewerAgentModel returns the model for the reviewer agent.
+// If not set, reviewer mode is considered disabled.
+func (c Config) ReviewerAgentModel() string {
+	if c.Agents.Reviewer != nil {
+		return c.Agents.Reviewer.Model
+	}
+	return ""
+}
+
+// parsePlannerAgents parses a legacy comma-separated list of
+// "provider:model" pairs (GODER_PLANNING_AGENTS).
 func parsePlannerAgents(s string) []AgentSpec {
 	var specs []AgentSpec
 	for _, entry := range strings.Split(s, ",") {

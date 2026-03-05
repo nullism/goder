@@ -74,12 +74,11 @@ func BuildSystemPrompt(model string, workDir string, registry *tools.Registry) s
 	return sb.String()
 }
 
-// BuildPlannerPrompt assembles the system prompt for a planning agent.
-// Planning agents explore the codebase independently and produce plans.
-func BuildPlannerPrompt(workDir string, registry *tools.Registry) string {
+// BuildPlanDraftPrompt assembles the system prompt for the main planning pass.
+func BuildPlanDraftPrompt(workDir string, registry *tools.Registry) string {
 	var sb strings.Builder
 
-	sb.WriteString(namedPrompt("planner"))
+	sb.WriteString(namedPrompt("plan_draft"))
 	sb.WriteString("\n\n")
 
 	// Environment info
@@ -91,7 +90,7 @@ func BuildPlannerPrompt(workDir string, registry *tools.Registry) string {
 	sb.WriteString("The working directory is the root of the project. ")
 	sb.WriteString("Use relative paths when referring to files.\n\n")
 
-	// Available tools (read-only only — planners are plan-only)
+	// Available tools (read-only only — planning is plan-only)
 	sb.WriteString("# Available Tools\n\n")
 	for _, t := range registry.All() {
 		if t.RequiresPermission() {
@@ -104,12 +103,40 @@ func BuildPlannerPrompt(workDir string, registry *tools.Registry) string {
 	return sb.String()
 }
 
-// BuildSynthesisPrompt assembles the system prompt for the synthesis phase.
-// The main agent uses this when combining plans from multiple planning agents.
-func BuildSynthesisPrompt(workDir string) string {
+// BuildPlanReviewPrompt assembles the system prompt for the review pass.
+func BuildPlanReviewPrompt(workDir string, registry *tools.Registry) string {
 	var sb strings.Builder
 
-	sb.WriteString(namedPrompt("synthesizer"))
+	sb.WriteString(namedPrompt("reviewer"))
+	sb.WriteString("\n\n")
+
+	// Environment info
+	sb.WriteString("# Environment\n\n")
+	fmt.Fprintf(&sb, "- Working directory: %s\n", workDir)
+	fmt.Fprintf(&sb, "- Platform: %s/%s\n", runtime.GOOS, runtime.GOARCH)
+	fmt.Fprintf(&sb, "- Date: %s\n", time.Now().Format("Mon Jan 2 2006"))
+	sb.WriteString("\n")
+	sb.WriteString("The working directory is the root of the project. ")
+	sb.WriteString("Use relative paths when referring to files.\n\n")
+
+	// Available tools (read-only only — reviewer can inspect but not modify)
+	sb.WriteString("# Available Tools\n\n")
+	for _, t := range registry.All() {
+		if t.RequiresPermission() {
+			continue
+		}
+		fmt.Fprintf(&sb, "## %s\n", t.Name())
+		fmt.Fprintf(&sb, "%s\n\n", t.Description())
+	}
+
+	return sb.String()
+}
+
+// BuildPlanSummaryPrompt assembles the system prompt for final plan summary.
+func BuildPlanSummaryPrompt(workDir string) string {
+	var sb strings.Builder
+
+	sb.WriteString(namedPrompt("plan_summary"))
 	sb.WriteString("\n\n")
 
 	// Environment info

@@ -14,18 +14,18 @@ import (
 type settingsView int
 
 const (
-	settingsViewMenu            settingsView = iota // main menu
-	settingsViewProviders                           // providers list
-	settingsViewProviderMenu                        // provider submenu
-	settingsViewAPIKey                              // API key input
-	settingsViewMaxIter                             // max iterations input
-	settingsViewCopilotAuth                         // GitHub Copilot device flow
-	settingsViewAgents                              // agents menu (main + planners)
-	settingsViewAgentMain                           // main agent provider selection
-	settingsViewAgentMainModels                     // main agent model selection
-	settingsViewPlanners                            // planners list
-	settingsViewPlannerAdd                          // add planner: provider selection
-	settingsViewPlannerModels                       // add planner: model selection
+	settingsViewMenu settingsView = iota
+	settingsViewProviders
+	settingsViewProviderMenu
+	settingsViewAPIKey
+	settingsViewMaxIter
+	settingsViewReviewRounds
+	settingsViewCopilotAuth
+	settingsViewAgents
+	settingsViewAgentMain
+	settingsViewAgentMainModels
+	settingsViewAgentReviewer
+	settingsViewAgentReviewerModels
 )
 
 // Settings holds the state for the settings overlay.
@@ -37,53 +37,49 @@ type Settings struct {
 	providers         []string
 	providerCursor    int
 	selectedProvider  string
-	providerForModels string // provider context used when entering models view
+	providerForModels string
 
-	// Max iterations input
-	maxIterInput textinput.Model
+	// Iteration inputs
+	maxIterInput     textinput.Model
+	reviewRoundInput textinput.Model
 
 	// Model selection state
-	models       []string // available models from API
-	modelCursor  int      // currently highlighted index
-	modelsErr    error    // error from fetching models
-	loadingModel bool     // true while fetching models
+	models       []string
+	modelCursor  int
+	modelsErr    error
+	loadingModel bool
 
 	// Feedback messages
-	feedback    string // success/error message to show
-	feedbackErr bool   // true if feedback is an error
+	feedback    string
+	feedbackErr bool
 
 	// Copilot device flow state
-	copilotUserCode string             // code to display to the user
-	copilotURL      string             // verification URL
-	copilotPolling  bool               // true while polling for authorization
-	copilotCancel   context.CancelFunc // cancels the polling goroutine
-	copilotErr      error              // error from the device flow
+	copilotUserCode string
+	copilotURL      string
+	copilotPolling  bool
+	copilotCancel   context.CancelFunc
+	copilotErr      error
 
 	// Agent configuration state
-	agentProviderCursor int            // cursor for agent provider selection lists
-	agentProviderPick   string         // provider chosen when adding/editing an agent
-	planners            []agentEntry   // local copy of configured planners
-	plannerCursor       int            // cursor within planners list
-	modelSelectTarget   modelSelectFor // what the model list is being used for
+	agentProviderCursor int
+	agentProviderPick   string
+	modelSelectTarget   modelSelectFor
 }
 
-// agentEntry is a provider+model pair displayed in the planners list.
+// agentEntry is a provider+model pair displayed in settings.
 type agentEntry struct {
 	Provider string
 	Model    string
 }
 
-// modelSelectFor distinguishes which flow triggered the model selection list.
 type modelSelectFor int
 
 const (
-	modelSelectAgentMain  modelSelectFor = iota // main agent model
-	modelSelectPlannerAdd                       // adding a new planner
+	modelSelectAgentMain modelSelectFor = iota
+	modelSelectAgentReviewer
 )
 
 // NewSettings creates a new settings component.
-// providers is the list of supported provider identifiers;
-// currentProvider is the one currently active.
 func NewSettings(providers []string, currentProvider string) Settings {
 	ti := textinput.New()
 	ti.Placeholder = "sk-..."
@@ -97,10 +93,16 @@ func NewSettings(providers []string, currentProvider string) Settings {
 	mi.CharLimit = 5
 	mi.Width = 10
 
+	ri := textinput.New()
+	ri.Placeholder = "3"
+	ri.CharLimit = 3
+	ri.Width = 10
+
 	return Settings{
 		view:             settingsViewMenu,
 		apiInput:         ti,
 		maxIterInput:     mi,
+		reviewRoundInput: ri,
 		providers:        providers,
 		selectedProvider: currentProvider,
 	}
@@ -108,30 +110,25 @@ func NewSettings(providers []string, currentProvider string) Settings {
 
 // --- Async message types for settings ---
 
-// modelsLoadedMsg carries the result of fetching models from the API.
 type modelsLoadedMsg struct {
 	models []string
 	err    error
 }
 
-// copilotAuthMsg carries the result of the GitHub Copilot device flow.
 type copilotAuthMsg struct {
-	token string // OAuth access token on success
-	err   error  // error if the flow failed
+	token string
+	err   error
 }
 
-// copilotDeviceCodeMsg carries the device code info to display to the user.
 type copilotDeviceCodeMsg struct {
 	userCode   string
 	url        string
-	deviceCode string // needed by model.go to start polling
-	interval   int    // poll interval in seconds
+	deviceCode string
+	interval   int
 	err        error
 }
 
 // Update handles key events in the settings overlay.
-// Returns the updated settings, whether the overlay should close,
-// and any tea.Cmd to execute.
 func (s Settings) Update(msg tea.KeyMsg) (Settings, bool, tea.Cmd) {
 	switch s.view {
 	case settingsViewMenu:
@@ -144,6 +141,8 @@ func (s Settings) Update(msg tea.KeyMsg) (Settings, bool, tea.Cmd) {
 		return s.updateAPIKey(msg)
 	case settingsViewMaxIter:
 		return s.updateMaxIter(msg)
+	case settingsViewReviewRounds:
+		return s.updateReviewRounds(msg)
 	case settingsViewCopilotAuth:
 		return s.updateCopilotAuth(msg)
 	case settingsViewAgents:
@@ -152,21 +151,18 @@ func (s Settings) Update(msg tea.KeyMsg) (Settings, bool, tea.Cmd) {
 		return s.updateAgentMain(msg)
 	case settingsViewAgentMainModels:
 		return s.updateAgentMainModels(msg)
-	case settingsViewPlanners:
-		return s.updatePlanners(msg)
-	case settingsViewPlannerAdd:
-		return s.updatePlannerAdd(msg)
-	case settingsViewPlannerModels:
-		return s.updatePlannerModels(msg)
+	case settingsViewAgentReviewer:
+		return s.updateAgentReviewer(msg)
+	case settingsViewAgentReviewerModels:
+		return s.updateAgentReviewerModels(msg)
 	}
 	return s, false, nil
 }
 
-// updateMenu handles keys in the main settings menu.
 func (s Settings) updateMenu(msg tea.KeyMsg) (Settings, bool, tea.Cmd) {
 	switch msg.String() {
 	case "esc", "ctrl+k":
-		return s, true, nil // close settings
+		return s, true, nil
 	case "1", "p", "P":
 		s.view = settingsViewProviders
 		s.feedback = ""
@@ -178,7 +174,13 @@ func (s Settings) updateMenu(msg tea.KeyMsg) (Settings, bool, tea.Cmd) {
 		s.maxIterInput.SetValue("")
 		s.maxIterInput.Focus()
 		return s, false, s.maxIterInput.Cursor.BlinkCmd()
-	case "3", "a", "A":
+	case "3", "r", "R":
+		s.view = settingsViewReviewRounds
+		s.feedback = ""
+		s.reviewRoundInput.SetValue("")
+		s.reviewRoundInput.Focus()
+		return s, false, s.reviewRoundInput.Cursor.BlinkCmd()
+	case "4", "a", "A":
 		s.view = settingsViewAgents
 		s.feedback = ""
 		return s, false, nil
@@ -219,7 +221,6 @@ func (s Settings) updateProviderMenu(msg tea.KeyMsg) (Settings, bool, tea.Cmd) {
 		s.view = settingsViewProviders
 		return s, false, nil
 	case "1", "a", "A":
-		// For copilot, use the device flow instead of a text input.
 		if s.selectedProvider == "copilot" {
 			s.view = settingsViewCopilotAuth
 			s.feedback = ""
@@ -227,7 +228,7 @@ func (s Settings) updateProviderMenu(msg tea.KeyMsg) (Settings, bool, tea.Cmd) {
 			s.copilotURL = ""
 			s.copilotPolling = false
 			s.copilotErr = nil
-			return s, false, nil // model.go will trigger the device code request
+			return s, false, nil
 		}
 		s.view = settingsViewAPIKey
 		s.feedback = ""
@@ -238,7 +239,6 @@ func (s Settings) updateProviderMenu(msg tea.KeyMsg) (Settings, bool, tea.Cmd) {
 	return s, false, nil
 }
 
-// updateAPIKey handles keys in the API key input sub-view.
 func (s Settings) updateAPIKey(msg tea.KeyMsg) (Settings, bool, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
@@ -252,18 +252,15 @@ func (s Settings) updateAPIKey(msg tea.KeyMsg) (Settings, bool, tea.Cmd) {
 			s.feedbackErr = true
 			return s, false, nil
 		}
-		// Signal to model.go to save the key
 		s.apiInput.Blur()
-		return s, false, nil // actual save handled by model.go checking for enter
+		return s, false, nil
 	}
 
-	// Forward to text input
 	var cmd tea.Cmd
 	s.apiInput, cmd = s.apiInput.Update(msg)
 	return s, false, cmd
 }
 
-// updateMaxIter handles keys in the max iterations input sub-view.
 func (s Settings) updateMaxIter(msg tea.KeyMsg) (Settings, bool, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
@@ -283,30 +280,213 @@ func (s Settings) updateMaxIter(msg tea.KeyMsg) (Settings, bool, tea.Cmd) {
 			s.feedbackErr = true
 			return s, false, nil
 		}
-		// Signal to model.go to save the value
 		s.maxIterInput.Blur()
-		return s, false, nil // actual save handled by model.go checking for enter
+		return s, false, nil
 	}
 
-	// Only allow digit keys in the text input
+	return s.updateNumericInput(msg, s.maxIterInput, func(ti textinput.Model) Settings {
+		s.maxIterInput = ti
+		return s
+	})
+}
+
+func (s Settings) updateReviewRounds(msg tea.KeyMsg) (Settings, bool, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		s.view = settingsViewMenu
+		s.reviewRoundInput.Blur()
+		return s, false, nil
+	case "enter":
+		val := strings.TrimSpace(s.reviewRoundInput.Value())
+		if val == "" {
+			s.feedback = "Value cannot be empty"
+			s.feedbackErr = true
+			return s, false, nil
+		}
+		n, err := strconv.Atoi(val)
+		if err != nil || n < 1 {
+			s.feedback = "Enter a positive integer"
+			s.feedbackErr = true
+			return s, false, nil
+		}
+		s.reviewRoundInput.Blur()
+		return s, false, nil
+	}
+
+	return s.updateNumericInput(msg, s.reviewRoundInput, func(ti textinput.Model) Settings {
+		s.reviewRoundInput = ti
+		return s
+	})
+}
+
+func (s Settings) updateNumericInput(msg tea.KeyMsg, ti textinput.Model, assign func(textinput.Model) Settings) (Settings, bool, tea.Cmd) {
 	if len(msg.String()) == 1 && msg.String()[0] >= '0' && msg.String()[0] <= '9' {
 		var cmd tea.Cmd
-		s.maxIterInput, cmd = s.maxIterInput.Update(msg)
+		ti, cmd = ti.Update(msg)
+		s = assign(ti)
 		return s, false, cmd
 	}
 
-	// Allow backspace/delete
 	switch msg.Type {
 	case tea.KeyBackspace, tea.KeyDelete:
 		var cmd tea.Cmd
-		s.maxIterInput, cmd = s.maxIterInput.Update(msg)
+		ti, cmd = ti.Update(msg)
+		s = assign(ti)
 		return s, false, cmd
 	}
 
 	return s, false, nil
 }
 
-// MaxIterValue returns the current value in the max iterations input as an int, or 0 if invalid.
+func (s Settings) updateCopilotAuth(msg tea.KeyMsg) (Settings, bool, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		if s.copilotCancel != nil {
+			s.copilotCancel()
+			s.copilotCancel = nil
+		}
+		s.copilotPolling = false
+		s.copilotErr = nil
+		s.view = settingsViewProviderMenu
+		return s, false, nil
+	}
+	return s, false, nil
+}
+
+func (s Settings) updateAgents(msg tea.KeyMsg) (Settings, bool, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		s.view = settingsViewMenu
+		return s, false, nil
+	case "1", "m", "M":
+		s.view = settingsViewAgentMain
+		s.agentProviderCursor = 0
+		s.feedback = ""
+		return s, false, nil
+	case "2", "r", "R":
+		s.view = settingsViewAgentReviewer
+		s.agentProviderCursor = 0
+		s.feedback = ""
+		return s, false, nil
+	}
+	return s, false, nil
+}
+
+func (s Settings) updateAgentMain(msg tea.KeyMsg) (Settings, bool, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		s.view = settingsViewAgents
+		return s, false, nil
+	case "up", "k":
+		if s.agentProviderCursor > 0 {
+			s.agentProviderCursor--
+		}
+		return s, false, nil
+	case "down", "j":
+		if s.agentProviderCursor < len(s.providers)-1 {
+			s.agentProviderCursor++
+		}
+		return s, false, nil
+	case "enter":
+		if len(s.providers) == 0 {
+			return s, false, nil
+		}
+		s.agentProviderPick = s.providers[s.agentProviderCursor]
+		s.providerForModels = s.agentProviderPick
+		s.modelSelectTarget = modelSelectAgentMain
+		s.view = settingsViewAgentMainModels
+		s.modelCursor = 0
+		s.models = nil
+		s.modelsErr = nil
+		s.loadingModel = true
+		s.feedback = ""
+		return s, false, nil
+	}
+	return s, false, nil
+}
+
+func (s Settings) updateAgentMainModels(msg tea.KeyMsg) (Settings, bool, tea.Cmd) {
+	return s.updateModelSelection(msg, settingsViewAgentMain)
+}
+
+func (s Settings) updateAgentReviewer(msg tea.KeyMsg) (Settings, bool, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		s.view = settingsViewAgents
+		return s, false, nil
+	case "up", "k":
+		if s.agentProviderCursor > 0 {
+			s.agentProviderCursor--
+		}
+		return s, false, nil
+	case "down", "j":
+		if s.agentProviderCursor < len(s.providers)-1 {
+			s.agentProviderCursor++
+		}
+		return s, false, nil
+	case "enter":
+		if len(s.providers) == 0 {
+			return s, false, nil
+		}
+		s.agentProviderPick = s.providers[s.agentProviderCursor]
+		s.providerForModels = s.agentProviderPick
+		s.modelSelectTarget = modelSelectAgentReviewer
+		s.view = settingsViewAgentReviewerModels
+		s.modelCursor = 0
+		s.models = nil
+		s.modelsErr = nil
+		s.loadingModel = true
+		s.feedback = ""
+		return s, false, nil
+	}
+	return s, false, nil
+}
+
+func (s Settings) updateAgentReviewerModels(msg tea.KeyMsg) (Settings, bool, tea.Cmd) {
+	return s.updateModelSelection(msg, settingsViewAgentReviewer)
+}
+
+func (s Settings) updateModelSelection(msg tea.KeyMsg, backView settingsView) (Settings, bool, tea.Cmd) {
+	if s.loadingModel {
+		if msg.String() == "esc" {
+			s.view = backView
+			s.loadingModel = false
+			return s, false, nil
+		}
+		return s, false, nil
+	}
+	if s.modelsErr != nil {
+		if msg.String() == "esc" {
+			s.view = backView
+			s.modelsErr = nil
+			return s, false, nil
+		}
+		return s, false, nil
+	}
+
+	switch msg.String() {
+	case "esc":
+		s.view = backView
+		return s, false, nil
+	case "up", "k":
+		if s.modelCursor > 0 {
+			s.modelCursor--
+		}
+		return s, false, nil
+	case "down", "j":
+		if s.modelCursor < len(s.models)-1 {
+			s.modelCursor++
+		}
+		return s, false, nil
+	case "enter", "d", "D":
+		// model.go handles persistence actions for these keys.
+		return s, false, nil
+	}
+
+	return s, false, nil
+}
+
+// MaxIterValue returns the max iteration input as int, or 0 if invalid.
 func (s Settings) MaxIterValue() int {
 	val := strings.TrimSpace(s.maxIterInput.Value())
 	n, err := strconv.Atoi(val)
@@ -316,7 +496,16 @@ func (s Settings) MaxIterValue() int {
 	return n
 }
 
-// HandleModelsLoaded processes the modelsLoadedMsg.
+// ReviewRoundValue returns the review round input as int, or 0 if invalid.
+func (s Settings) ReviewRoundValue() int {
+	val := strings.TrimSpace(s.reviewRoundInput.Value())
+	n, err := strconv.Atoi(val)
+	if err != nil || n < 1 {
+		return 0
+	}
+	return n
+}
+
 func (s *Settings) HandleModelsLoaded(models []string, err error) {
 	s.loadingModel = false
 	if err != nil {
@@ -327,23 +516,19 @@ func (s *Settings) HandleModelsLoaded(models []string, err error) {
 	s.modelCursor = 0
 }
 
-// SetFeedback sets a feedback message on the settings overlay.
 func (s *Settings) SetFeedback(msg string, isErr bool) {
 	s.feedback = msg
 	s.feedbackErr = isErr
 }
 
-// SetView updates the active settings sub-view.
 func (s *Settings) SetView(view settingsView) {
 	s.view = view
 }
 
-// SelectedProvider returns the currently selected provider identifier.
 func (s Settings) SelectedProvider() string {
 	return s.selectedProvider
 }
 
-// SelectedModel returns the currently highlighted model ID, or empty if none.
 func (s Settings) SelectedModel() string {
 	if len(s.models) > 0 && s.modelCursor < len(s.models) {
 		return s.models[s.modelCursor]
@@ -351,19 +536,52 @@ func (s Settings) SelectedModel() string {
 	return ""
 }
 
-// APIKeyValue returns the current value in the API key input.
 func (s Settings) APIKeyValue() string {
 	return strings.TrimSpace(s.apiInput.Value())
 }
 
+func (s Settings) AgentProviderPick() string {
+	return s.agentProviderPick
+}
+
+func (s Settings) ModelSelectTarget() modelSelectFor {
+	return s.modelSelectTarget
+}
+
+func (s *Settings) HandleCopilotDeviceCode(userCode, url string, err error) {
+	if err != nil {
+		s.copilotErr = err
+		s.copilotPolling = false
+		return
+	}
+	s.copilotUserCode = userCode
+	s.copilotURL = url
+	s.copilotPolling = true
+}
+
+func (s *Settings) HandleCopilotAuth(_ string, err error) {
+	s.copilotPolling = false
+	if s.copilotCancel != nil {
+		s.copilotCancel()
+		s.copilotCancel = nil
+	}
+	if err != nil {
+		s.copilotErr = err
+	}
+}
+
+func (s *Settings) SetCopilotCancel(cancel context.CancelFunc) {
+	s.copilotCancel = cancel
+}
+
 // View renders the settings overlay.
-func (s Settings) View(width int, currentKey string, currentMaxIter int, mainAgent agentEntry, planners []agentEntry) string {
-	innerWidth := width - 6 // account for border + padding
+func (s Settings) View(width int, currentKey string, currentMaxIter int, currentReviewRounds int, mainAgent agentEntry, reviewer *agentEntry) string {
+	innerWidth := width - 6
 
 	var content string
 	switch s.view {
 	case settingsViewMenu:
-		content = s.viewMenu(currentMaxIter, mainAgent, planners)
+		content = s.viewMenu(currentMaxIter, currentReviewRounds, mainAgent, reviewer)
 	case settingsViewProviders:
 		content = s.viewProviders()
 	case settingsViewProviderMenu:
@@ -372,39 +590,39 @@ func (s Settings) View(width int, currentKey string, currentMaxIter int, mainAge
 		content = s.viewAPIKey(innerWidth)
 	case settingsViewMaxIter:
 		content = s.viewMaxIter(innerWidth, currentMaxIter)
+	case settingsViewReviewRounds:
+		content = s.viewReviewRounds(innerWidth, currentReviewRounds)
 	case settingsViewCopilotAuth:
 		content = s.viewCopilotAuth()
 	case settingsViewAgents:
-		content = s.viewAgents(mainAgent, planners)
+		content = s.viewAgents(mainAgent, reviewer)
 	case settingsViewAgentMain:
 		content = s.viewAgentMain(mainAgent)
 	case settingsViewAgentMainModels:
 		content = s.viewAgentMainModels(mainAgent)
-	case settingsViewPlanners:
-		content = s.viewPlannersList(planners)
-	case settingsViewPlannerAdd:
-		content = s.viewPlannerAdd()
-	case settingsViewPlannerModels:
-		content = s.viewPlannerModels()
+	case settingsViewAgentReviewer:
+		content = s.viewAgentReviewer(reviewer)
+	case settingsViewAgentReviewerModels:
+		content = s.viewAgentReviewerModels(reviewer)
 	}
 
 	return settingsStyle.Width(innerWidth).Render(content)
 }
 
-// viewMenu renders the main settings menu.
-func (s Settings) viewMenu(currentMaxIter int, mainAgent agentEntry, planners []agentEntry) string {
+func (s Settings) viewMenu(currentMaxIter int, currentReviewRounds int, mainAgent agentEntry, reviewer *agentEntry) string {
 	title := settingsTitleStyle.Render("Settings")
 
-	agentSummary := fmt.Sprintf("%s:%s", mainAgent.Provider, mainAgent.Model)
-	if len(planners) > 0 {
-		agentSummary += fmt.Sprintf(" + %d planners", len(planners))
+	reviewerSummary := "disabled"
+	if reviewer != nil {
+		reviewerSummary = fmt.Sprintf("%s:%s", reviewer.Provider, reviewer.Model)
 	}
 
 	var b strings.Builder
 	b.WriteString("  " + title + "\n\n")
-	fmt.Fprintf(&b, "  [1] Providers   %s\n", dimStyle.Render(s.selectedProvider))
-	fmt.Fprintf(&b, "  [2] Max Iters   %s\n", dimStyle.Render(strconv.Itoa(currentMaxIter)))
-	fmt.Fprintf(&b, "  [3] Agents      %s\n", dimStyle.Render(agentSummary))
+	fmt.Fprintf(&b, "  [1] Providers      %s\n", dimStyle.Render(s.selectedProvider))
+	fmt.Fprintf(&b, "  [2] Max Iters      %s\n", dimStyle.Render(strconv.Itoa(currentMaxIter)))
+	fmt.Fprintf(&b, "  [3] Review Rounds  %s\n", dimStyle.Render(strconv.Itoa(currentReviewRounds)))
+	fmt.Fprintf(&b, "  [4] Agents         %s\n", dimStyle.Render(fmt.Sprintf("main=%s:%s, reviewer=%s", mainAgent.Provider, mainAgent.Model, reviewerSummary)))
 
 	if s.feedback != "" {
 		b.WriteString("\n")
@@ -417,7 +635,6 @@ func (s Settings) viewMenu(currentMaxIter int, mainAgent agentEntry, planners []
 
 	b.WriteString("\n\n")
 	b.WriteString("  " + settingsKeyHintStyle.Render("esc: close"))
-
 	return b.String()
 }
 
@@ -476,7 +693,6 @@ func (s Settings) viewProviderMenu(currentKey string) string {
 	return b.String()
 }
 
-// viewAPIKey renders the API key input sub-view.
 func (s Settings) viewAPIKey(width int) string {
 	title := settingsTitleStyle.Render(fmt.Sprintf("Enter %s API Key", titleCase(s.selectedProvider)))
 	s.apiInput.Width = width - 4
@@ -503,7 +719,6 @@ func (s Settings) viewAPIKey(width int) string {
 	return b.String()
 }
 
-// viewMaxIter renders the max iterations input sub-view.
 func (s Settings) viewMaxIter(width int, currentMaxIter int) string {
 	title := settingsTitleStyle.Render("Max Agent Iterations")
 	s.maxIterInput.Width = 10
@@ -512,71 +727,24 @@ func (s Settings) viewMaxIter(width int, currentMaxIter int) string {
 	b.WriteString("  " + title + "\n\n")
 	fmt.Fprintf(&b, "  Current: %s\n\n", dimStyle.Render(strconv.Itoa(currentMaxIter)))
 	b.WriteString("  " + s.maxIterInput.View() + "\n")
-
-	if s.feedback != "" {
-		b.WriteString("\n")
-		if s.feedbackErr {
-			b.WriteString("  " + settingsErrorStyle.Render(s.feedback))
-		} else {
-			b.WriteString("  " + settingsSuccessStyle.Render(s.feedback))
-		}
-	}
-
 	b.WriteString("\n\n")
 	b.WriteString("  " + settingsKeyHintStyle.Render("enter: save  esc: back"))
-
 	return b.String()
 }
 
-// updateCopilotAuth handles keys in the Copilot device flow auth view.
-func (s Settings) updateCopilotAuth(msg tea.KeyMsg) (Settings, bool, tea.Cmd) {
-	switch msg.String() {
-	case "esc":
-		// Cancel polling if in progress.
-		if s.copilotCancel != nil {
-			s.copilotCancel()
-			s.copilotCancel = nil
-		}
-		s.copilotPolling = false
-		s.copilotErr = nil
-		s.view = settingsViewProviderMenu
-		return s, false, nil
-	}
-	return s, false, nil
+func (s Settings) viewReviewRounds(width int, currentRounds int) string {
+	title := settingsTitleStyle.Render("Plan Review Rounds")
+	s.reviewRoundInput.Width = 10
+
+	var b strings.Builder
+	b.WriteString("  " + title + "\n\n")
+	fmt.Fprintf(&b, "  Current: %s\n\n", dimStyle.Render(strconv.Itoa(currentRounds)))
+	b.WriteString("  " + s.reviewRoundInput.View() + "\n")
+	b.WriteString("\n\n")
+	b.WriteString("  " + settingsKeyHintStyle.Render("enter: save  esc: back"))
+	return b.String()
 }
 
-// HandleCopilotDeviceCode processes the copilotDeviceCodeMsg.
-func (s *Settings) HandleCopilotDeviceCode(userCode, url string, err error) {
-	if err != nil {
-		s.copilotErr = err
-		s.copilotPolling = false
-		return
-	}
-	s.copilotUserCode = userCode
-	s.copilotURL = url
-	s.copilotPolling = true
-}
-
-// HandleCopilotAuth processes the copilotAuthMsg (token result).
-func (s *Settings) HandleCopilotAuth(token string, err error) {
-	s.copilotPolling = false
-	if s.copilotCancel != nil {
-		s.copilotCancel()
-		s.copilotCancel = nil
-	}
-	if err != nil {
-		s.copilotErr = err
-		return
-	}
-	// Success — model.go handles saving the token.
-}
-
-// SetCopilotCancel stores the cancel function for the polling goroutine.
-func (s *Settings) SetCopilotCancel(cancel context.CancelFunc) {
-	s.copilotCancel = cancel
-}
-
-// viewCopilotAuth renders the GitHub Copilot device flow authentication view.
 func (s Settings) viewCopilotAuth() string {
 	title := settingsTitleStyle.Render("GitHub Copilot Authentication")
 
@@ -612,231 +780,23 @@ func (s Settings) viewCopilotAuth() string {
 	return b.String()
 }
 
-// --- Agent settings update methods ---
-
-// updateAgents handles keys in the agents sub-menu.
-func (s Settings) updateAgents(msg tea.KeyMsg) (Settings, bool, tea.Cmd) {
-	switch msg.String() {
-	case "esc":
-		s.view = settingsViewMenu
-		return s, false, nil
-	case "1", "m", "M":
-		s.view = settingsViewAgentMain
-		s.agentProviderCursor = 0
-		s.feedback = ""
-		return s, false, nil
-	case "2", "p", "P":
-		s.view = settingsViewPlanners
-		s.plannerCursor = 0
-		s.feedback = ""
-		return s, false, nil
-	}
-	return s, false, nil
-}
-
-// updateAgentMain handles keys in the main agent provider selection.
-func (s Settings) updateAgentMain(msg tea.KeyMsg) (Settings, bool, tea.Cmd) {
-	switch msg.String() {
-	case "esc":
-		s.view = settingsViewAgents
-		return s, false, nil
-	case "up", "k":
-		if s.agentProviderCursor > 0 {
-			s.agentProviderCursor--
-		}
-		return s, false, nil
-	case "down", "j":
-		if s.agentProviderCursor < len(s.providers)-1 {
-			s.agentProviderCursor++
-		}
-		return s, false, nil
-	case "enter":
-		if len(s.providers) == 0 {
-			return s, false, nil
-		}
-		s.agentProviderPick = s.providers[s.agentProviderCursor]
-		s.providerForModels = s.agentProviderPick
-		s.modelSelectTarget = modelSelectAgentMain
-		s.view = settingsViewAgentMainModels
-		s.modelCursor = 0
-		s.models = nil
-		s.modelsErr = nil
-		s.loadingModel = true
-		s.feedback = ""
-		return s, false, nil
-	}
-	return s, false, nil
-}
-
-// updateAgentMainModels handles keys in the main agent model selection.
-func (s Settings) updateAgentMainModels(msg tea.KeyMsg) (Settings, bool, tea.Cmd) {
-	if s.loadingModel {
-		if msg.String() == "esc" {
-			s.view = settingsViewAgentMain
-			s.loadingModel = false
-			return s, false, nil
-		}
-		return s, false, nil
-	}
-	if s.modelsErr != nil {
-		if msg.String() == "esc" {
-			s.view = settingsViewAgentMain
-			s.modelsErr = nil
-			return s, false, nil
-		}
-		return s, false, nil
-	}
-	switch msg.String() {
-	case "esc":
-		s.view = settingsViewAgentMain
-		return s, false, nil
-	case "up", "k":
-		if s.modelCursor > 0 {
-			s.modelCursor--
-		}
-		return s, false, nil
-	case "down", "j":
-		if s.modelCursor < len(s.models)-1 {
-			s.modelCursor++
-		}
-		return s, false, nil
-	case "enter":
-		// model.go handles the save
-		return s, false, nil
-	}
-	return s, false, nil
-}
-
-// updatePlanners handles keys in the planners list view.
-func (s Settings) updatePlanners(msg tea.KeyMsg) (Settings, bool, tea.Cmd) {
-	switch msg.String() {
-	case "esc":
-		s.view = settingsViewAgents
-		return s, false, nil
-	case "up", "k":
-		if s.plannerCursor > 0 {
-			s.plannerCursor--
-		}
-		return s, false, nil
-	case "down", "j":
-		if len(s.planners) > 0 && s.plannerCursor < len(s.planners)-1 {
-			s.plannerCursor++
-		}
-		return s, false, nil
-	case "a", "A":
-		s.view = settingsViewPlannerAdd
-		s.agentProviderCursor = 0
-		s.feedback = ""
-		return s, false, nil
-	case "d", "D":
-		// Delete highlighted planner — model.go handles persistence
-		if len(s.planners) > 0 && s.plannerCursor < len(s.planners) {
-			s.planners = append(s.planners[:s.plannerCursor], s.planners[s.plannerCursor+1:]...)
-			if s.plannerCursor >= len(s.planners) && s.plannerCursor > 0 {
-				s.plannerCursor--
-			}
-			return s, false, nil
-		}
-		return s, false, nil
-	}
-	return s, false, nil
-}
-
-// updatePlannerAdd handles keys in the add-planner provider selection.
-func (s Settings) updatePlannerAdd(msg tea.KeyMsg) (Settings, bool, tea.Cmd) {
-	switch msg.String() {
-	case "esc":
-		s.view = settingsViewPlanners
-		return s, false, nil
-	case "up", "k":
-		if s.agentProviderCursor > 0 {
-			s.agentProviderCursor--
-		}
-		return s, false, nil
-	case "down", "j":
-		if s.agentProviderCursor < len(s.providers)-1 {
-			s.agentProviderCursor++
-		}
-		return s, false, nil
-	case "enter":
-		if len(s.providers) == 0 {
-			return s, false, nil
-		}
-		s.agentProviderPick = s.providers[s.agentProviderCursor]
-		s.providerForModels = s.agentProviderPick
-		s.modelSelectTarget = modelSelectPlannerAdd
-		s.view = settingsViewPlannerModels
-		s.modelCursor = 0
-		s.models = nil
-		s.modelsErr = nil
-		s.loadingModel = true
-		s.feedback = ""
-		return s, false, nil
-	}
-	return s, false, nil
-}
-
-// updatePlannerModels handles keys in the add-planner model selection.
-func (s Settings) updatePlannerModels(msg tea.KeyMsg) (Settings, bool, tea.Cmd) {
-	if s.loadingModel {
-		if msg.String() == "esc" {
-			s.view = settingsViewPlannerAdd
-			s.loadingModel = false
-			return s, false, nil
-		}
-		return s, false, nil
-	}
-	if s.modelsErr != nil {
-		if msg.String() == "esc" {
-			s.view = settingsViewPlannerAdd
-			s.modelsErr = nil
-			return s, false, nil
-		}
-		return s, false, nil
-	}
-	switch msg.String() {
-	case "esc":
-		s.view = settingsViewPlannerAdd
-		return s, false, nil
-	case "up", "k":
-		if s.modelCursor > 0 {
-			s.modelCursor--
-		}
-		return s, false, nil
-	case "down", "j":
-		if s.modelCursor < len(s.models)-1 {
-			s.modelCursor++
-		}
-		return s, false, nil
-	case "enter":
-		// model.go handles the save
-		return s, false, nil
-	}
-	return s, false, nil
-}
-
-// --- Agent settings view methods ---
-
-// viewAgents renders the agents sub-menu.
-func (s Settings) viewAgents(mainAgent agentEntry, planners []agentEntry) string {
+func (s Settings) viewAgents(mainAgent agentEntry, reviewer *agentEntry) string {
 	title := settingsTitleStyle.Render("Agents")
 
-	mainSummary := fmt.Sprintf("%s:%s", mainAgent.Provider, mainAgent.Model)
-	plannerSummary := "none"
-	if len(planners) > 0 {
-		plannerSummary = fmt.Sprintf("%d configured", len(planners))
+	reviewerSummary := "disabled"
+	if reviewer != nil {
+		reviewerSummary = fmt.Sprintf("%s:%s", reviewer.Provider, reviewer.Model)
 	}
 
 	var b strings.Builder
 	b.WriteString("  " + title + "\n\n")
-	fmt.Fprintf(&b, "  [1] Main Agent  %s\n", dimStyle.Render(mainSummary))
-	fmt.Fprintf(&b, "  [2] Planners    %s\n", dimStyle.Render(plannerSummary))
+	fmt.Fprintf(&b, "  [1] Main Agent    %s\n", dimStyle.Render(fmt.Sprintf("%s:%s", mainAgent.Provider, mainAgent.Model)))
+	fmt.Fprintf(&b, "  [2] Review Agent  %s\n", dimStyle.Render(reviewerSummary))
 	b.WriteString("\n")
 	b.WriteString("  " + settingsKeyHintStyle.Render("esc: back"))
 	return b.String()
 }
 
-// viewAgentMain renders the main agent provider selection list.
 func (s Settings) viewAgentMain(mainAgent agentEntry) string {
 	title := settingsTitleStyle.Render("Main Agent Provider")
 
@@ -863,49 +823,22 @@ func (s Settings) viewAgentMain(mainAgent agentEntry) string {
 	return b.String()
 }
 
-// viewAgentMainModels renders the model selection for the main agent.
 func (s Settings) viewAgentMainModels(mainAgent agentEntry) string {
 	title := settingsTitleStyle.Render("Main Agent Model")
-	return s.viewModelList(title, mainAgent.Model)
+	return s.viewModelList(title, mainAgent.Model, false)
 }
 
-// viewPlannersList renders the list of configured planners.
-func (s Settings) viewPlannersList(planners []agentEntry) string {
-	title := settingsTitleStyle.Render("Planning Agents")
+func (s Settings) viewAgentReviewer(reviewer *agentEntry) string {
+	title := settingsTitleStyle.Render("Review Agent Provider")
+
+	current := "disabled"
+	if reviewer != nil {
+		current = fmt.Sprintf("%s:%s", reviewer.Provider, reviewer.Model)
+	}
 
 	var b strings.Builder
 	b.WriteString("  " + title + "\n\n")
-
-	if len(planners) == 0 {
-		b.WriteString("  " + dimStyle.Render("No planning agents configured") + "\n")
-		b.WriteString("  " + dimStyle.Render("Add planners to enable multi-agent planning") + "\n")
-	} else {
-		for i, p := range planners {
-			cursor := "  "
-			style := settingsItemStyle
-			if i == s.plannerCursor {
-				cursor = settingsCursorStyle.Render("> ")
-				style = settingsSelectedStyle
-			}
-			b.WriteString("  " + cursor + style.Render(fmt.Sprintf("%s:%s", p.Provider, p.Model)) + "\n")
-		}
-	}
-
-	b.WriteString("\n")
-	hints := "[a] add  esc: back"
-	if len(planners) > 0 {
-		hints = "[a] add  [d] delete  esc: back"
-	}
-	b.WriteString("  " + settingsKeyHintStyle.Render(hints))
-	return b.String()
-}
-
-// viewPlannerAdd renders the provider selection for adding a planner.
-func (s Settings) viewPlannerAdd() string {
-	title := settingsTitleStyle.Render("Add Planner — Select Provider")
-
-	var b strings.Builder
-	b.WriteString("  " + title + "\n\n")
+	fmt.Fprintf(&b, "  Current: %s\n\n", dimStyle.Render(current))
 
 	for i, p := range s.providers {
 		cursor := "  "
@@ -914,7 +847,11 @@ func (s Settings) viewPlannerAdd() string {
 			cursor = settingsCursorStyle.Render("> ")
 			style = settingsSelectedStyle
 		}
-		b.WriteString("  " + cursor + style.Render(titleCase(p)) + "\n")
+		suffix := ""
+		if reviewer != nil && p == reviewer.Provider {
+			suffix = dimStyle.Render(" (current)")
+		}
+		b.WriteString("  " + cursor + style.Render(titleCase(p)) + suffix + "\n")
 	}
 
 	b.WriteString("\n")
@@ -922,21 +859,21 @@ func (s Settings) viewPlannerAdd() string {
 	return b.String()
 }
 
-// viewPlannerModels renders the model selection for adding a planner.
-func (s Settings) viewPlannerModels() string {
-	title := settingsTitleStyle.Render("Add Planner — Select Model")
-	return s.viewModelList(title, "")
+func (s Settings) viewAgentReviewerModels(reviewer *agentEntry) string {
+	title := settingsTitleStyle.Render("Review Agent Model")
+	current := ""
+	if reviewer != nil {
+		current = reviewer.Model
+	}
+	return s.viewModelList(title, current, true)
 }
 
-// viewModelList is a shared helper for rendering a scrollable model list.
-// It reuses the same models/modelCursor/loadingModel/modelsErr state.
-func (s Settings) viewModelList(title, currentModel string) string {
+func (s Settings) viewModelList(title, currentModel string, allowDisable bool) string {
 	var b strings.Builder
 	b.WriteString("  " + title + "\n\n")
 
 	if s.loadingModel {
-		b.WriteString("  Loading models...")
-		b.WriteString("\n\n")
+		b.WriteString("  Loading models...\n\n")
 		b.WriteString("  " + settingsKeyHintStyle.Render("esc: back"))
 		return b.String()
 	}
@@ -991,48 +928,18 @@ func (s Settings) viewModelList(title, currentModel string) string {
 	}
 
 	if len(s.models) > maxVisible {
-		fmt.Fprintf(&b, "\n  %s",
-			dimStyle.Render(fmt.Sprintf("showing %d-%d of %d", start+1, end, len(s.models))))
-	}
-
-	if s.feedback != "" {
-		b.WriteString("\n")
-		if s.feedbackErr {
-			b.WriteString("  " + settingsErrorStyle.Render(s.feedback))
-		} else {
-			b.WriteString("  " + settingsSuccessStyle.Render(s.feedback))
-		}
+		fmt.Fprintf(&b, "\n  %s", dimStyle.Render(fmt.Sprintf("showing %d-%d of %d", start+1, end, len(s.models))))
 	}
 
 	b.WriteString("\n\n")
-	b.WriteString("  " + settingsKeyHintStyle.Render("up/down: navigate  enter: select  esc: back"))
+	hint := "up/down: navigate  enter: select  esc: back"
+	if allowDisable {
+		hint = "up/down: navigate  enter: select  d: disable reviewer  esc: back"
+	}
+	b.WriteString("  " + settingsKeyHintStyle.Render(hint))
 	return b.String()
 }
 
-// Planners returns a copy of the settings' local planners list.
-func (s Settings) Planners() []agentEntry {
-	out := make([]agentEntry, len(s.planners))
-	copy(out, s.planners)
-	return out
-}
-
-// SetPlanners replaces the settings' local planners list.
-func (s *Settings) SetPlanners(planners []agentEntry) {
-	s.planners = make([]agentEntry, len(planners))
-	copy(s.planners, planners)
-}
-
-// AgentProviderPick returns the provider selected during agent configuration.
-func (s Settings) AgentProviderPick() string {
-	return s.agentProviderPick
-}
-
-// ModelSelectTarget returns the current model selection target.
-func (s Settings) ModelSelectTarget() modelSelectFor {
-	return s.modelSelectTarget
-}
-
-// fetchModelsCmd creates a tea.Cmd that fetches models from the provider.
 func fetchModelsCmd(ctx context.Context, listFn func(ctx context.Context) ([]string, error)) tea.Cmd {
 	return func() tea.Msg {
 		models, err := listFn(ctx)
@@ -1040,7 +947,6 @@ func fetchModelsCmd(ctx context.Context, listFn func(ctx context.Context) ([]str
 	}
 }
 
-// titleCase returns s with the first letter uppercased.
 func titleCase(s string) string {
 	if s == "" {
 		return s
