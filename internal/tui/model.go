@@ -374,7 +374,12 @@ func (m *Model) submitPrompt(prompt string) tea.Cmd {
 	// not back to the review loop.
 	var eventCh <-chan agent.Event
 
-	if m.reviewerSpec != nil && !m.planSynthesized {
+	useReviewedPlanning := m.reviewerSpec != nil && !m.planSynthesized
+	if useReviewedPlanning {
+		useReviewedPlanning = m.cfg.AlwaysReview || shouldUseReviewedPlanning(prompt)
+	}
+
+	if useReviewedPlanning {
 		m.reviewActive = true
 		pl := planner.New(planner.Config{
 			MainProvider:  m.prov,

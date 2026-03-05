@@ -5,6 +5,8 @@ Goder supports two execution modes:
 1. **Single-agent loop** (default): the main agent plans and implements directly.
 2. **Main + Review loop**: the main agent drafts a plan, a review agent critiques it, and the cycle iterates for a configured number of rounds before a final summarized plan is shown to the user.
 
+When a reviewer is configured, goder can still bypass the review loop for simple informational questions and tiny low-risk edits unless `alwaysReview` is enabled.
+
 When no review agent is configured, goder runs in single-agent mode.
 
 ## Configuration
@@ -15,6 +17,7 @@ When no review agent is configured, goder runs in single-agent mode.
   "model": "gpt-4o",
   "maxIterations": 50,
   "reviewIterations": 3,
+  "alwaysReview": false,
   "agents": {
     "main": {
       "provider": "openai",
@@ -33,6 +36,7 @@ Environment overrides:
 - `GODER_MAIN_PROVIDER`, `GODER_MAIN_MODEL`
 - `GODER_REVIEWER_PROVIDER`, `GODER_REVIEWER_MODEL`
 - `GODER_REVIEW_ITERATIONS`
+- `GODER_ALWAYS_REVIEW`
 
 Legacy `GODER_PLANNING_AGENTS` is still read for backward compatibility (first entry is used as reviewer if reviewer is not configured).
 

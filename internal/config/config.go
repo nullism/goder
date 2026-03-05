@@ -64,6 +64,10 @@ type Config struct {
 	// ReviewIterations is the maximum number of main<->review rounds.
 	ReviewIterations int `json:"reviewIterations"`
 
+	// AlwaysReview forces all prompts through the reviewed planning loop.
+	// When false, simple requests may bypass review for faster responses.
+	AlwaysReview bool `json:"alwaysReview,omitempty"`
+
 	// Debug enables debug logging.
 	Debug bool `json:"debug"`
 
@@ -150,6 +154,11 @@ func Load() (Config, error) {
 	if v := os.Getenv("GODER_REVIEW_ITERATIONS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			cfg.ReviewIterations = n
+		}
+	}
+	if v := os.Getenv("GODER_ALWAYS_REVIEW"); v != "" {
+		if b, ok := parseBool(v); ok {
+			cfg.AlwaysReview = b
 		}
 	}
 	if v := os.Getenv("GODER_MAIN_PROVIDER"); v != "" {
@@ -357,4 +366,20 @@ func parsePlannerAgents(s string) []AgentSpec {
 		specs = append(specs, AgentSpec{Provider: prov, Model: model})
 	}
 	return specs
+}
+
+func parseBool(s string) (bool, bool) {
+	v, err := strconv.ParseBool(strings.TrimSpace(s))
+	if err == nil {
+		return v, true
+	}
+
+	switch strings.TrimSpace(strings.ToLower(s)) {
+	case "1", "yes", "y", "on":
+		return true, true
+	case "0", "no", "n", "off":
+		return false, true
+	default:
+		return false, false
+	}
 }
