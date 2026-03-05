@@ -106,7 +106,6 @@ func (p *Planner) run(ctx context.Context, history []message.Message, sessionID 
 	var reviewerVerdict string
 	agreed := false
 	reviewSkipped := false
-	requiresReview := true
 
 	for round := 1; round <= p.reviewRounds; round++ {
 		events <- agent.Event{Type: agent.EventPlanningPhase, PlanPhase: fmt.Sprintf("Round %d/%d: drafting plan...", round, p.reviewRounds)}
@@ -126,7 +125,7 @@ func (p *Planner) run(ctx context.Context, history []message.Message, sessionID 
 		}
 
 		if round == 1 {
-			requiresReview = isSemiComplexPlan(draft)
+			requiresReview := isSemiComplexPlan(draft)
 			if !requiresReview {
 				reviewSkipped = true
 				agreed = true
