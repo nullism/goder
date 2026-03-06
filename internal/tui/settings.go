@@ -21,6 +21,7 @@ const (
 	settingsViewMaxIter
 	settingsViewReviewRounds
 	settingsViewCopilotAuth
+	settingsViewOpenAIAuth
 	settingsViewAgents
 	settingsViewAgentMain
 	settingsViewAgentMainModels
@@ -61,6 +62,14 @@ type Settings struct {
 	copilotPolling  bool
 	copilotCancel   context.CancelFunc
 	copilotErr      error
+
+	// OpenAI device flow state
+	openAIUserCode string
+	openAIURL      string
+	openAIPolling  bool
+	openAICancel   context.CancelFunc
+	openAIErr      error
+	openAIWarn     string
 
 	// Agent configuration state
 	agentProviderCursor int
@@ -131,6 +140,28 @@ type copilotDeviceCodeMsg struct {
 	err        error
 }
 
+type openAIDeviceCodeMsg struct {
+	userCode     string
+	url          string
+	deviceAuthID string
+	interval     int
+	err          error
+}
+
+type openAIBrowserStartMsg struct {
+	url     string
+	openErr error
+	err     error
+}
+
+type openAIAuthMsg struct {
+	accessToken  string
+	refreshToken string
+	expiresIn    int
+	accountID    string
+	err          error
+}
+
 // Update handles key events in the settings overlay.
 func (s Settings) Update(msg tea.KeyMsg) (Settings, bool, tea.Cmd) {
 	switch s.view {
@@ -148,6 +179,8 @@ func (s Settings) Update(msg tea.KeyMsg) (Settings, bool, tea.Cmd) {
 		return s.updateReviewRounds(msg)
 	case settingsViewCopilotAuth:
 		return s.updateCopilotAuth(msg)
+	case settingsViewOpenAIAuth:
+		return s.updateOpenAIAuth(msg)
 	case settingsViewAgents:
 		return s.updateAgents(msg)
 	case settingsViewAgentMain:
@@ -237,11 +270,29 @@ func (s Settings) updateProviderMenu(msg tea.KeyMsg) (Settings, bool, tea.Cmd) {
 			s.copilotErr = nil
 			return s, false, nil
 		}
+		if s.selectedProvider == "openai" {
+			s.view = settingsViewOpenAIAuth
+			s.feedback = ""
+			s.openAIUserCode = ""
+			s.openAIURL = ""
+			s.openAIPolling = false
+			s.openAIErr = nil
+			s.openAIWarn = ""
+			return s, false, nil
+		}
 		s.view = settingsViewAPIKey
 		s.feedback = ""
 		s.apiInput.SetValue("")
 		s.apiInput.Focus()
 		return s, false, s.apiInput.Cursor.BlinkCmd()
+	case "2":
+		if s.selectedProvider == "openai" {
+			s.view = settingsViewAPIKey
+			s.feedback = ""
+			s.apiInput.SetValue("")
+			s.apiInput.Focus()
+			return s, false, s.apiInput.Cursor.BlinkCmd()
+		}
 	}
 	return s, false, nil
 }
@@ -354,6 +405,21 @@ func (s Settings) updateCopilotAuth(msg tea.KeyMsg) (Settings, bool, tea.Cmd) {
 		}
 		s.copilotPolling = false
 		s.copilotErr = nil
+		s.view = settingsViewProviderMenu
+		return s, false, nil
+	}
+	return s, false, nil
+}
+
+func (s Settings) updateOpenAIAuth(msg tea.KeyMsg) (Settings, bool, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		if s.openAICancel != nil {
+			s.openAICancel()
+			s.openAICancel = nil
+		}
+		s.openAIPolling = false
+		s.openAIErr = nil
 		s.view = settingsViewProviderMenu
 		return s, false, nil
 	}
@@ -643,6 +709,8 @@ func (s Settings) View(width int, currentKey string, currentMaxIter int, current
 		content = s.viewReviewRounds(innerWidth, currentReviewRounds)
 	case settingsViewCopilotAuth:
 		content = s.viewCopilotAuth()
+	case settingsViewOpenAIAuth:
+		content = s.viewOpenAIAuth()
 	case settingsViewAgents:
 		content = s.viewAgents(mainAgent, reviewer, programmer)
 	case settingsViewAgentMain:
@@ -743,6 +811,13 @@ func (s Settings) viewProviderMenu(currentKey string) string {
 			authLabel = "Re-authenticate"
 		}
 		fmt.Fprintf(&b, "  [1] %s  %s\n", authLabel, dimStyle.Render(masked))
+	} else if s.selectedProvider == "openai" {
+		authLabel := "Authenticate"
+		if currentKey != "" {
+			authLabel = "Re-authenticate"
+		}
+		fmt.Fprintf(&b, "  [1] %s  %s\n", authLabel, dimStyle.Render(masked))
+		fmt.Fprintf(&b, "  [2] API Key       %s\n", dimStyle.Render(masked))
 	} else {
 		fmt.Fprintf(&b, "  [1] API Key     %s\n", dimStyle.Render(masked))
 	}
@@ -836,6 +911,96 @@ func (s Settings) viewCopilotAuth() string {
 	b.WriteString("  " + settingsKeyHintStyle.Render("esc: cancel"))
 
 	return b.String()
+}
+
+func (s Settings) viewOpenAIAuth() string {
+	title := settingsTitleStyle.Render("OpenAI Authentication")
+
+	var b strings.Builder
+	b.WriteString("  " + title + "\n\n")
+
+	if s.openAIErr != nil {
+		b.WriteString("  " + settingsErrorStyle.Render(fmt.Sprintf("Error: %s", s.openAIErr.Error())))
+		b.WriteString("\n\n")
+		b.WriteString("  " + settingsKeyHintStyle.Render("esc: back"))
+		return b.String()
+	}
+
+	if s.openAIWarn != "" {
+		b.WriteString("  " + dimStyle.Render(s.openAIWarn))
+		b.WriteString("\n\n")
+	}
+
+	if s.openAIURL == "" {
+		b.WriteString("  Preparing browser sign-in...\n")
+		b.WriteString("\n")
+		b.WriteString("  " + settingsKeyHintStyle.Render("esc: cancel"))
+		return b.String()
+	}
+
+	b.WriteString("  1. Open this URL in your browser:\n\n")
+	b.WriteString("     " + settingsSelectedStyle.Render(formatAuthURL(s.openAIURL)) + "\n")
+	b.WriteString("     " + s.openAIURL + "\n\n")
+	b.WriteString("  Manual fallback command:\n\n")
+	b.WriteString("     " + manualOpenCommand(s.openAIURL) + "\n\n")
+	b.WriteString("  2. Complete sign-in and consent in the browser.\n")
+	b.WriteString("     goder will finish automatically when redirected locally.\n\n")
+	if s.openAIUserCode != "" {
+		b.WriteString("  Device code:\n\n")
+		b.WriteString("     " + settingsTitleStyle.Render(s.openAIUserCode) + "\n\n")
+	}
+
+	if s.openAIPolling {
+		b.WriteString("  " + dimStyle.Render("Waiting for authorization...") + "\n")
+	}
+
+	b.WriteString("\n")
+	b.WriteString("  " + settingsKeyHintStyle.Render("esc: cancel"))
+
+	return b.String()
+}
+
+func (s *Settings) HandleOpenAIDeviceCode(userCode, url string, err error) {
+	if err != nil {
+		s.openAIErr = err
+		s.openAIPolling = false
+		return
+	}
+	s.openAIUserCode = userCode
+	s.openAIURL = url
+	s.openAIPolling = true
+}
+
+func (s *Settings) HandleOpenAIBrowserStart(url string, err error) {
+	if err != nil {
+		s.openAIErr = err
+		s.openAIPolling = false
+		return
+	}
+	s.openAIWarn = ""
+	s.openAIUserCode = ""
+	s.openAIURL = url
+	s.openAIPolling = true
+}
+
+func (s *Settings) SetOpenAIWarning(warn string) {
+	s.openAIWarn = warn
+}
+
+func (s *Settings) HandleOpenAIAuth(err error) {
+	s.openAIPolling = false
+	s.openAIWarn = ""
+	if s.openAICancel != nil {
+		s.openAICancel()
+		s.openAICancel = nil
+	}
+	if err != nil {
+		s.openAIErr = err
+	}
+}
+
+func (s *Settings) SetOpenAICancel(cancel context.CancelFunc) {
+	s.openAICancel = cancel
 }
 
 func (s Settings) viewAgents(mainAgent agentEntry, reviewer *agentEntry, programmer *agentEntry) string {

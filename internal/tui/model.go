@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
@@ -130,6 +131,7 @@ func rebuildReviewerSpec(cfg config.Config) *planner.ReviewerSpec {
 	if err != nil {
 		return nil
 	}
+	configureOpenAIOAuthMode(reviewerProvider, reviewProv, cfg)
 
 	return &planner.ReviewerSpec{Provider: reviewProv, Model: reviewerModel}
 }
@@ -137,7 +139,28 @@ func rebuildReviewerSpec(cfg config.Config) *planner.ReviewerSpec {
 func rebuildProgrammerProvider(cfg config.Config) (provider.Provider, error) {
 	progProvider := cfg.ProgrammerAgentProvider()
 	progModel := cfg.ProgrammerAgentModel()
-	return provider.New(progProvider, cfg.APIKeyFor(progProvider), progModel)
+	prov, err := provider.New(progProvider, cfg.APIKeyFor(progProvider), progModel)
+	if err != nil {
+		return nil, err
+	}
+	configureOpenAIOAuthMode(progProvider, prov, cfg)
+	return prov, nil
+}
+
+func configureOpenAIOAuthMode(providerName string, prov provider.Provider, cfg config.Config) {
+	if providerName != "openai" {
+		return
+	}
+	oai, ok := prov.(*provider.OpenAIProvider)
+	if !ok {
+		return
+	}
+	authCfg, ok := cfg.AuthFor("openai")
+	if !ok || authCfg.Type != "oauth" {
+		oai.SetOAuthCodexMode(false, "")
+		return
+	}
+	oai.SetOAuthCodexMode(true, authCfg.AccountID)
 }
 
 // Init implements tea.Model.
@@ -282,6 +305,91 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.settings.SetView(settingsViewProviderMenu)
 		return m, nil
 
+	case openAIDeviceCodeMsg:
+		m.settings.HandleOpenAIDeviceCode(msg.userCode, msg.url, msg.err)
+		if msg.err != nil {
+			return m, nil
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		m.settings.SetOpenAICancel(cancel)
+		deviceAuthID := msg.deviceAuthID
+		userCode := msg.userCode
+		interval := msg.interval
+		return m, func() tea.Msg {
+			token, err := auth.PollOpenAIForToken(ctx, deviceAuthID, userCode, interval)
+			if err != nil {
+				return openAIAuthMsg{err: err}
+			}
+			return openAIAuthMsg{
+				accessToken:  token.AccessToken,
+				refreshToken: token.RefreshToken,
+				expiresIn:    token.ExpiresIn,
+				accountID:    token.AccountID,
+			}
+		}
+
+	case openAIBrowserStartMsg:
+		m.settings.HandleOpenAIBrowserStart(msg.url, msg.err)
+		if msg.err != nil {
+			return m, nil
+		}
+		if msg.openErr != nil {
+			m.settings.SetOpenAIWarning(fmt.Sprintf("Couldn't auto-open browser (%s). Open the URL below manually.", msg.openErr.Error()))
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		m.settings.SetOpenAICancel(cancel)
+		return m, func() tea.Msg {
+			token, err := auth.WaitOpenAIBrowserAuth(ctx)
+			if err != nil {
+				return openAIAuthMsg{err: err}
+			}
+			return openAIAuthMsg{
+				accessToken:  token.AccessToken,
+				refreshToken: token.RefreshToken,
+				expiresIn:    token.ExpiresIn,
+				accountID:    token.AccountID,
+			}
+		}
+
+	case openAIAuthMsg:
+		m.settings.HandleOpenAIAuth(msg.err)
+		if msg.err != nil {
+			return m, nil
+		}
+
+		expiresAt := time.Now().Add(time.Duration(msg.expiresIn) * time.Second).Unix()
+		m.cfg.SetAuthFor("openai", config.ProviderAuth{
+			Type:         "oauth",
+			AccessToken:  msg.accessToken,
+			RefreshToken: msg.refreshToken,
+			ExpiresAt:    expiresAt,
+			AccountID:    msg.accountID,
+		})
+		m.cfg.SetAPIKeyFor("openai", msg.accessToken)
+		if m.mainProv != nil && m.mainProv.Name() == "openai" {
+			m.mainProv.SetAPIKey(msg.accessToken)
+		}
+		if m.progProv != nil && m.progProv.Name() == "openai" {
+			m.progProv.SetAPIKey(msg.accessToken)
+		}
+		if m.reviewerSpec != nil && m.reviewerSpec.Provider != nil && m.reviewerSpec.Provider.Name() == "openai" {
+			m.reviewerSpec.Provider.SetAPIKey(msg.accessToken)
+		}
+		configureOpenAIOAuthMode("openai", m.mainProv, m.cfg)
+		configureOpenAIOAuthMode("openai", m.progProv, m.cfg)
+		if m.reviewerSpec != nil && m.reviewerSpec.Provider != nil {
+			configureOpenAIOAuthMode("openai", m.reviewerSpec.Provider, m.cfg)
+		}
+
+		if err := config.Save(m.cfg); err != nil {
+			m.settings.SetFeedback(fmt.Sprintf("Save failed: %s", err.Error()), true)
+			return m, nil
+		}
+
+		m.settings.SetFeedback("OpenAI authenticated successfully", false)
+		m.settings.SetView(settingsViewProviderMenu)
+		return m, nil
+
 	case tea.KeyMsg:
 		if m.confirmQuit {
 			return m.handleQuitConfirmKey(msg)
@@ -358,8 +466,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // submitPrompt sends a user message and starts the agent loop.
 func (m *Model) submitPrompt(prompt string) tea.Cmd {
-	// Check if API key is configured for the main agent provider.
 	mainProvider := m.cfg.MainAgentProvider()
+	if err := m.maybeRefreshProviderOAuth(mainProvider); err != nil {
+		m.msgs.Add(message.System,
+			fmt.Sprintf("OpenAI authentication refresh failed: %s. Press ctrl+k to re-authenticate.", err.Error()))
+		return nil
+	}
+
+	// Check if API key is configured for the main agent provider.
 	if m.cfg.APIKeyFor(mainProvider) == "" {
 		m.msgs.Add(message.System,
 			fmt.Sprintf("No API key configured for provider %q. Press ctrl+k to open settings.", mainProvider))
@@ -626,6 +740,21 @@ func (m Model) handleAgentEvent(event agent.Event) (tea.Model, tea.Cmd) {
 					return m, m.listenForPermissions()
 				}
 
+				reviewerProvider := m.cfg.ReviewerAgentProvider()
+				if err := m.maybeRefreshProviderOAuth(reviewerProvider); err != nil {
+					failed := message.NewAssistantMessage(event.FinalMessage.SessionID, fmt.Sprintf("OpenAI authentication refresh failed for reviewer provider %q: %s", reviewerProvider, err.Error()), nil)
+					failed.Model = m.cfg.MainAgentModel()
+					if err := m.sessions.AddMessage(failed); err != nil {
+						m.err = err
+					}
+					m.msgs.AddMessage(failed)
+					m.thinking = false
+					m.streamBuf = ""
+					m.activeRunRole = runRoleNone
+					m.approvedPlanRun = false
+					return m, m.listenForPermissions()
+				}
+
 				history, err := m.sessions.GetMessages()
 				if err != nil {
 					m.thinking = false
@@ -675,6 +804,19 @@ func (m Model) handleAgentEvent(event agent.Event) (tea.Model, tea.Cmd) {
 				}
 
 				progProvider := m.cfg.ProgrammerAgentProvider()
+				if err := m.maybeRefreshProviderOAuth(progProvider); err != nil {
+					missing := message.NewAssistantMessage(event.FinalMessage.SessionID, fmt.Sprintf("OpenAI authentication refresh failed for programmer provider %q: %s", progProvider, err.Error()), nil)
+					missing.Model = m.cfg.MainAgentModel()
+					if err := m.sessions.AddMessage(missing); err != nil {
+						m.err = err
+					}
+					m.msgs.AddMessage(missing)
+					m.thinking = false
+					m.streamBuf = ""
+					m.activeRunRole = runRoleNone
+					m.approvedPlanRun = false
+					return m, m.listenForPermissions()
+				}
 				if m.cfg.APIKeyFor(progProvider) == "" {
 					missing := message.NewAssistantMessage(event.FinalMessage.SessionID, fmt.Sprintf("No API key configured for programmer provider %q.", progProvider), nil)
 					missing.Model = m.cfg.MainAgentModel()
@@ -856,39 +998,66 @@ func (m Model) handleSettingsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	// Handle transition to OpenAI auth (trigger browser OAuth flow)
+	if prevView != settingsViewOpenAIAuth && m.settings.view == settingsViewOpenAIAuth {
+		return m, func() tea.Msg {
+			authURL, err := auth.StartOpenAIBrowserAuth()
+			if err != nil {
+				return openAIBrowserStartMsg{err: err}
+			}
+			openErr := openExternalURL(authURL)
+			return openAIBrowserStartMsg{url: authURL, openErr: openErr}
+		}
+	}
+
 	// Handle transition to main agent model selection (trigger fetch)
 	if prevView != settingsViewAgentMainModels && m.settings.view == settingsViewAgentMainModels {
 		provName := m.settings.AgentProviderPick()
+		if err := m.maybeRefreshProviderOAuth(provName); err != nil {
+			m.settings.HandleModelsLoaded(nil, fmt.Errorf("provider auth error: %s", err.Error()))
+			return m, nil
+		}
 		apiKey := m.cfg.APIKeyFor(provName)
 		tmpProv, err := provider.New(provName, apiKey, "")
 		if err != nil {
 			m.settings.HandleModelsLoaded(nil, fmt.Errorf("provider error: %s", err.Error()))
 			return m, nil
 		}
+		configureOpenAIOAuthMode(provName, tmpProv, m.cfg)
 		return m, fetchModelsCmd(context.Background(), tmpProv.ListModels)
 	}
 
 	// Handle transition to reviewer model selection (trigger fetch)
 	if prevView != settingsViewAgentReviewerModels && m.settings.view == settingsViewAgentReviewerModels {
 		provName := m.settings.AgentProviderPick()
+		if err := m.maybeRefreshProviderOAuth(provName); err != nil {
+			m.settings.HandleModelsLoaded(nil, fmt.Errorf("provider auth error: %s", err.Error()))
+			return m, nil
+		}
 		apiKey := m.cfg.APIKeyFor(provName)
 		tmpProv, err := provider.New(provName, apiKey, "")
 		if err != nil {
 			m.settings.HandleModelsLoaded(nil, fmt.Errorf("provider error: %s", err.Error()))
 			return m, nil
 		}
+		configureOpenAIOAuthMode(provName, tmpProv, m.cfg)
 		return m, fetchModelsCmd(context.Background(), tmpProv.ListModels)
 	}
 
 	// Handle transition to programmer model selection (trigger fetch)
 	if prevView != settingsViewAgentProgrammerModels && m.settings.view == settingsViewAgentProgrammerModels {
 		provName := m.settings.AgentProviderPick()
+		if err := m.maybeRefreshProviderOAuth(provName); err != nil {
+			m.settings.HandleModelsLoaded(nil, fmt.Errorf("provider auth error: %s", err.Error()))
+			return m, nil
+		}
 		apiKey := m.cfg.APIKeyFor(provName)
 		tmpProv, err := provider.New(provName, apiKey, "")
 		if err != nil {
 			m.settings.HandleModelsLoaded(nil, fmt.Errorf("provider error: %s", err.Error()))
 			return m, nil
 		}
+		configureOpenAIOAuthMode(provName, tmpProv, m.cfg)
 		return m, fetchModelsCmd(context.Background(), tmpProv.ListModels)
 	}
 
@@ -906,6 +1075,14 @@ func (m Model) handleSettingsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 		// Update config and active provider if applicable
 		m.cfg.SetAPIKeyFor(selectedProvider, apiKey)
+		if selectedProvider == "openai" {
+			m.cfg.ClearAuthFor("openai")
+			configureOpenAIOAuthMode("openai", m.mainProv, m.cfg)
+			configureOpenAIOAuthMode("openai", m.progProv, m.cfg)
+			if m.reviewerSpec != nil && m.reviewerSpec.Provider != nil {
+				configureOpenAIOAuthMode("openai", m.reviewerSpec.Provider, m.cfg)
+			}
+		}
 		if m.mainProv != nil && selectedProvider == m.mainProv.Name() {
 			m.mainProv.SetAPIKey(apiKey)
 		}
@@ -989,6 +1166,7 @@ func (m Model) handleSettingsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 		m.mainProv = newProv
+		configureOpenAIOAuthMode(provName, m.mainProv, m.cfg)
 		m.reviewerSpec = rebuildReviewerSpec(m.cfg)
 		if rebuiltProg, progErr := rebuildProgrammerProvider(m.cfg); progErr == nil {
 			m.progProv = rebuiltProg
@@ -1041,6 +1219,7 @@ func (m Model) handleSettingsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 		m.progProv = newProg
+		configureOpenAIOAuthMode(provName, m.progProv, m.cfg)
 
 		if err := config.Save(m.cfg); err != nil {
 			m.settings.SetFeedback(fmt.Sprintf("Save failed: %s", err.Error()), true)
@@ -1068,6 +1247,55 @@ func (m Model) handleSettingsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	return m, cmd
+}
+
+func (m *Model) maybeRefreshProviderOAuth(providerName string) error {
+	if providerName != "openai" {
+		return nil
+	}
+
+	authCfg, ok := m.cfg.AuthFor(providerName)
+	if !ok || authCfg.Type != "oauth" || authCfg.RefreshToken == "" {
+		return nil
+	}
+
+	if authCfg.AccessToken != "" && authCfg.ExpiresAt > time.Now().Unix()+60 {
+		return nil
+	}
+
+	tok, err := auth.RefreshOpenAIToken(context.Background(), authCfg.RefreshToken)
+	if err != nil {
+		return err
+	}
+
+	expiresAt := time.Now().Add(time.Duration(tok.ExpiresIn) * time.Second).Unix()
+	m.cfg.SetAuthFor(providerName, config.ProviderAuth{
+		Type:         "oauth",
+		AccessToken:  tok.AccessToken,
+		RefreshToken: tok.RefreshToken,
+		ExpiresAt:    expiresAt,
+		AccountID:    tok.AccountID,
+	})
+	m.cfg.SetAPIKeyFor(providerName, tok.AccessToken)
+
+	if m.mainProv != nil && m.mainProv.Name() == providerName {
+		m.mainProv.SetAPIKey(tok.AccessToken)
+		configureOpenAIOAuthMode(providerName, m.mainProv, m.cfg)
+	}
+	if m.progProv != nil && m.progProv.Name() == providerName {
+		m.progProv.SetAPIKey(tok.AccessToken)
+		configureOpenAIOAuthMode(providerName, m.progProv, m.cfg)
+	}
+	if m.reviewerSpec != nil && m.reviewerSpec.Provider != nil && m.reviewerSpec.Provider.Name() == providerName {
+		m.reviewerSpec.Provider.SetAPIKey(tok.AccessToken)
+		configureOpenAIOAuthMode(providerName, m.reviewerSpec.Provider, m.cfg)
+	}
+
+	if err := config.Save(m.cfg); err != nil {
+		return fmt.Errorf("saving refreshed auth: %w", err)
+	}
+
+	return nil
 }
 
 // headerHeight returns the rendered height of the header, accounting for the

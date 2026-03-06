@@ -16,6 +16,15 @@ type AgentSpec struct {
 	Model    string `json:"model"`
 }
 
+// ProviderAuth stores provider-specific OAuth credentials.
+type ProviderAuth struct {
+	Type         string `json:"type"`
+	AccessToken  string `json:"accessToken,omitempty"`
+	RefreshToken string `json:"refreshToken,omitempty"`
+	ExpiresAt    int64  `json:"expiresAt,omitempty"`
+	AccountID    string `json:"accountId,omitempty"`
+}
+
 // AgentsConfig holds the named agent configuration.
 // The main agent orchestrates flow, the reviewer critiques plans,
 // and the programmer executes approved implementation plans.
@@ -52,6 +61,9 @@ type Config struct {
 
 	// ProviderKeys stores API keys keyed by provider name.
 	ProviderKeys map[string]string `json:"providerKeys,omitempty"`
+
+	// ProviderAuth stores provider auth credentials keyed by provider name.
+	ProviderAuth map[string]ProviderAuth `json:"providerAuth,omitempty"`
 
 	// MaxTokens is the maximum number of tokens in the LLM response.
 	MaxTokens int `json:"maxTokens"`
@@ -216,11 +228,19 @@ func Load() (Config, error) {
 	if cfg.ProviderKeys == nil {
 		cfg.ProviderKeys = make(map[string]string)
 	}
+	if cfg.ProviderAuth == nil {
+		cfg.ProviderAuth = make(map[string]ProviderAuth)
+	}
 	if cfg.APIKey != "" && cfg.ProviderKeys[cfg.Provider] == "" {
 		cfg.ProviderKeys[cfg.Provider] = cfg.APIKey
 	}
 	if cfg.ProviderKeys[cfg.Provider] == "" {
 		cfg.ProviderKeys[cfg.Provider] = apiKeyFromEnv(cfg.Provider)
+	}
+	if cfg.ProviderKeys[cfg.Provider] == "" {
+		if auth, ok := cfg.ProviderAuth[cfg.Provider]; ok && auth.Type == "oauth" {
+			cfg.ProviderKeys[cfg.Provider] = auth.AccessToken
+		}
 	}
 	cfg.APIKey = cfg.ProviderKeys[cfg.Provider]
 
@@ -253,6 +273,13 @@ func (c Config) APIKeyFor(provider string) string {
 			return v
 		}
 	}
+	if c.ProviderAuth != nil {
+		if auth, ok := c.ProviderAuth[provider]; ok && auth.Type == "oauth" {
+			if auth.AccessToken != "" {
+				return auth.AccessToken
+			}
+		}
+	}
 	if provider == c.Provider {
 		return c.APIKey
 	}
@@ -268,6 +295,37 @@ func (c *Config) SetAPIKeyFor(provider, key string) {
 	if provider == c.Provider {
 		c.APIKey = key
 	}
+}
+
+// AuthFor returns provider auth credentials for a provider.
+func (c Config) AuthFor(provider string) (ProviderAuth, bool) {
+	if c.ProviderAuth == nil {
+		return ProviderAuth{}, false
+	}
+	auth, ok := c.ProviderAuth[provider]
+	if !ok {
+		return ProviderAuth{}, false
+	}
+	return auth, true
+}
+
+// SetAuthFor sets provider auth credentials for a provider.
+func (c *Config) SetAuthFor(provider string, auth ProviderAuth) {
+	if c.ProviderAuth == nil {
+		c.ProviderAuth = make(map[string]ProviderAuth)
+	}
+	c.ProviderAuth[provider] = auth
+	if auth.Type == "oauth" && auth.AccessToken != "" {
+		c.SetAPIKeyFor(provider, auth.AccessToken)
+	}
+}
+
+// ClearAuthFor removes provider auth credentials for a provider.
+func (c *Config) ClearAuthFor(provider string) {
+	if c.ProviderAuth == nil {
+		return
+	}
+	delete(c.ProviderAuth, provider)
 }
 
 // defaultDataDir returns the default data directory for persistent storage.

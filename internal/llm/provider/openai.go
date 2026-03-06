@@ -17,9 +17,11 @@ import (
 // OpenAIProvider implements the Provider interface for OpenAI's API
 // using the Responses API (POST /v1/responses).
 type OpenAIProvider struct {
-	apiKey  string
-	model   string
-	baseURL string
+	apiKey         string
+	model          string
+	baseURL        string
+	oauthCodexMode bool
+	accountID      string
 }
 
 // NewOpenAIProvider creates a new OpenAI provider.
@@ -39,6 +41,12 @@ func (p *OpenAIProvider) SetAPIKey(apiKey string) { p.apiKey = apiKey }
 // SetModel updates the provider's model at runtime.
 func (p *OpenAIProvider) SetModel(model string) { p.model = model }
 
+// SetOAuthCodexMode enables/disables ChatGPT OAuth Codex transport mode.
+func (p *OpenAIProvider) SetOAuthCodexMode(enabled bool, accountID string) {
+	p.oauthCodexMode = enabled
+	p.accountID = accountID
+}
+
 // oaiModelsResponse is the response from GET /v1/models.
 type oaiModelsResponse struct {
 	Data []oaiModelEntry `json:"data"`
@@ -52,9 +60,22 @@ type oaiModelEntry struct {
 // supportedModelPrefixes are prefixes that identify models usable for text generation.
 var supportedModelPrefixes = []string{"gpt-", "o1", "o3", "o4", "chatgpt-"}
 
+var openAICodexOAuthModels = []string{
+	"gpt-5.1-codex",
+	"gpt-5.1-codex-max",
+	"gpt-5.1-codex-mini",
+	"gpt-5.2",
+	"gpt-5.2-codex",
+	"gpt-5.3-codex",
+}
+
 // ListModels fetches available models from the OpenAI API and returns
 // only text-generation-capable model IDs, sorted alphabetically.
 func (p *OpenAIProvider) ListModels(ctx context.Context) ([]string, error) {
+	if p.oauthCodexMode {
+		return append([]string(nil), openAICodexOAuthModels...), nil
+	}
+
 	httpReq, err := http.NewRequestWithContext(ctx, "GET", p.baseURL+"/models", nil)
 	if err != nil {
 		return nil, fmt.Errorf("creating request: %w", err)
@@ -210,13 +231,24 @@ func (p *OpenAIProvider) SendMessage(ctx context.Context, req Request) (<-chan S
 		return nil, fmt.Errorf("marshaling request: %w", err)
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", p.baseURL+"/responses", bytes.NewReader(body))
+	url := p.baseURL + "/responses"
+	if p.oauthCodexMode {
+		url = "https://chatgpt.com/backend-api/codex/responses"
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("creating request: %w", err)
 	}
 
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
+	if p.oauthCodexMode {
+		httpReq.Header.Set("originator", "goder")
+		httpReq.Header.Set("User-Agent", "goder/0.1")
+		if p.accountID != "" {
+			httpReq.Header.Set("ChatGPT-Account-Id", p.accountID)
+		}
+	}
 
 	client := &http.Client{}
 	resp, err := client.Do(httpReq)

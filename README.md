@@ -115,6 +115,10 @@ Provider API keys:
 
 You can also set `providerKeys` in config for per-provider credentials.
 
+OpenAI can also be authenticated with OAuth (ChatGPT Plus/Pro style) from the
+settings UI. OAuth credentials are stored under `providerAuth.openai` and the
+current access token is also reflected in `providerKeys.openai`.
+
 ### Example `.goder.json`
 
 ```json

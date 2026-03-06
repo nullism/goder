@@ -45,6 +45,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "error creating main agent provider (%s:%s): %v\n", mainProvName, mainModel, err)
 		os.Exit(1)
 	}
+	applyOpenAIOAuthMode(mainProvName, mainProv, cfg)
 
 	// Build review agent spec if configured
 	var reviewerSpec *planner.ReviewerSpec
@@ -55,6 +56,7 @@ func main() {
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "warning: reviewer disabled (%s:%s): %v\n", reviewerProvider, reviewerModel, err)
 		} else {
+			applyOpenAIOAuthMode(reviewerProvider, reviewProv, cfg)
 			reviewerSpec = &planner.ReviewerSpec{Provider: reviewProv, Model: reviewerModel}
 		}
 	}
@@ -67,6 +69,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "error creating programmer agent provider (%s:%s): %v\n", programmerProvider, programmerModel, err)
 		os.Exit(1)
 	}
+	applyOpenAIOAuthMode(programmerProvider, programmerProv, cfg)
 
 	// Create the TUI model
 	model := tui.New(cfg, database, sessionSvc, registry, mainProv, programmerProv, permSvc, reviewerSpec)
@@ -83,4 +86,20 @@ func main() {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+func applyOpenAIOAuthMode(providerName string, prov provider.Provider, cfg config.Config) {
+	if providerName != "openai" {
+		return
+	}
+	oai, ok := prov.(*provider.OpenAIProvider)
+	if !ok {
+		return
+	}
+	authCfg, ok := cfg.AuthFor("openai")
+	if !ok || authCfg.Type != "oauth" {
+		oai.SetOAuthCodexMode(false, "")
+		return
+	}
+	oai.SetOAuthCodexMode(true, authCfg.AccountID)
 }
