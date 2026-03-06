@@ -17,8 +17,8 @@ type AgentSpec struct {
 }
 
 // AgentsConfig holds the named agent configuration.
-// The main agent drives the conversation and executes plans.
-// The reviewer agent critiques plans before user approval.
+// The main agent orchestrates flow, the reviewer critiques plans,
+// and the programmer executes approved implementation plans.
 type AgentsConfig struct {
 	// Main is the provider+model for the main agent.
 	// Falls back to the top-level Provider/Model if omitted.
@@ -28,6 +28,10 @@ type AgentsConfig struct {
 	// If omitted, review mode is disabled and the main agent operates
 	// as a single agent.
 	Reviewer *AgentSpec `json:"reviewer,omitempty"`
+
+	// Programmer is the provider+model for the implementation agent.
+	// Falls back to the main agent provider/model if omitted.
+	Programmer *AgentSpec `json:"programmer,omitempty"`
 
 	// Planners is kept only for backward compatibility with older
 	// configurations and is ignored in new behavior.
@@ -74,7 +78,7 @@ type Config struct {
 	// WorkDir is the working directory. Defaults to cwd.
 	WorkDir string `json:"-"`
 
-	// Agents holds the named agent configuration (main + reviewer).
+	// Agents holds the named agent configuration (main + reviewer + programmer).
 	Agents AgentsConfig `json:"agents,omitempty"`
 }
 
@@ -184,6 +188,18 @@ func Load() (Config, error) {
 			cfg.Agents.Reviewer = &AgentSpec{}
 		}
 		cfg.Agents.Reviewer.Model = v
+	}
+	if v := os.Getenv("GODER_PROGRAMMER_PROVIDER"); v != "" {
+		if cfg.Agents.Programmer == nil {
+			cfg.Agents.Programmer = &AgentSpec{}
+		}
+		cfg.Agents.Programmer.Provider = v
+	}
+	if v := os.Getenv("GODER_PROGRAMMER_MODEL"); v != "" {
+		if cfg.Agents.Programmer == nil {
+			cfg.Agents.Programmer = &AgentSpec{}
+		}
+		cfg.Agents.Programmer.Model = v
 	}
 	if v := os.Getenv("GODER_PLANNING_AGENTS"); v != "" {
 		cfg.Agents.Planners = parsePlannerAgents(v)
@@ -343,6 +359,24 @@ func (c Config) ReviewerAgentModel() string {
 		return c.Agents.Reviewer.Model
 	}
 	return ""
+}
+
+// ProgrammerAgentProvider returns the provider for the programmer agent,
+// falling back to the main agent provider if not set.
+func (c Config) ProgrammerAgentProvider() string {
+	if c.Agents.Programmer != nil && c.Agents.Programmer.Provider != "" {
+		return c.Agents.Programmer.Provider
+	}
+	return c.MainAgentProvider()
+}
+
+// ProgrammerAgentModel returns the model for the programmer agent,
+// falling back to the main agent model if not set.
+func (c Config) ProgrammerAgentModel() string {
+	if c.Agents.Programmer != nil && c.Agents.Programmer.Model != "" {
+		return c.Agents.Programmer.Model
+	}
+	return c.MainAgentModel()
 }
 
 // parsePlannerAgents parses a legacy comma-separated list of

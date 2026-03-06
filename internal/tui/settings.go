@@ -26,6 +26,8 @@ const (
 	settingsViewAgentMainModels
 	settingsViewAgentReviewer
 	settingsViewAgentReviewerModels
+	settingsViewAgentProgrammer
+	settingsViewAgentProgrammerModels
 )
 
 // Settings holds the state for the settings overlay.
@@ -77,6 +79,7 @@ type modelSelectFor int
 const (
 	modelSelectAgentMain modelSelectFor = iota
 	modelSelectAgentReviewer
+	modelSelectAgentProgrammer
 )
 
 // NewSettings creates a new settings component.
@@ -155,6 +158,10 @@ func (s Settings) Update(msg tea.KeyMsg) (Settings, bool, tea.Cmd) {
 		return s.updateAgentReviewer(msg)
 	case settingsViewAgentReviewerModels:
 		return s.updateAgentReviewerModels(msg)
+	case settingsViewAgentProgrammer:
+		return s.updateAgentProgrammer(msg)
+	case settingsViewAgentProgrammerModels:
+		return s.updateAgentProgrammerModels(msg)
 	}
 	return s, false, nil
 }
@@ -368,6 +375,11 @@ func (s Settings) updateAgents(msg tea.KeyMsg) (Settings, bool, tea.Cmd) {
 		s.agentProviderCursor = 0
 		s.feedback = ""
 		return s, false, nil
+	case "3", "g", "G":
+		s.view = settingsViewAgentProgrammer
+		s.agentProviderCursor = 0
+		s.feedback = ""
+		return s, false, nil
 	}
 	return s, false, nil
 }
@@ -444,6 +456,43 @@ func (s Settings) updateAgentReviewer(msg tea.KeyMsg) (Settings, bool, tea.Cmd) 
 
 func (s Settings) updateAgentReviewerModels(msg tea.KeyMsg) (Settings, bool, tea.Cmd) {
 	return s.updateModelSelection(msg, settingsViewAgentReviewer)
+}
+
+func (s Settings) updateAgentProgrammer(msg tea.KeyMsg) (Settings, bool, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		s.view = settingsViewAgents
+		return s, false, nil
+	case "up", "k":
+		if s.agentProviderCursor > 0 {
+			s.agentProviderCursor--
+		}
+		return s, false, nil
+	case "down", "j":
+		if s.agentProviderCursor < len(s.providers)-1 {
+			s.agentProviderCursor++
+		}
+		return s, false, nil
+	case "enter":
+		if len(s.providers) == 0 {
+			return s, false, nil
+		}
+		s.agentProviderPick = s.providers[s.agentProviderCursor]
+		s.providerForModels = s.agentProviderPick
+		s.modelSelectTarget = modelSelectAgentProgrammer
+		s.view = settingsViewAgentProgrammerModels
+		s.modelCursor = 0
+		s.models = nil
+		s.modelsErr = nil
+		s.loadingModel = true
+		s.feedback = ""
+		return s, false, nil
+	}
+	return s, false, nil
+}
+
+func (s Settings) updateAgentProgrammerModels(msg tea.KeyMsg) (Settings, bool, tea.Cmd) {
+	return s.updateModelSelection(msg, settingsViewAgentProgrammer)
 }
 
 func (s Settings) updateModelSelection(msg tea.KeyMsg, backView settingsView) (Settings, bool, tea.Cmd) {
@@ -575,13 +624,13 @@ func (s *Settings) SetCopilotCancel(cancel context.CancelFunc) {
 }
 
 // View renders the settings overlay.
-func (s Settings) View(width int, currentKey string, currentMaxIter int, currentReviewRounds int, mainAgent agentEntry, reviewer *agentEntry) string {
+func (s Settings) View(width int, currentKey string, currentMaxIter int, currentReviewRounds int, mainAgent agentEntry, reviewer *agentEntry, programmer *agentEntry) string {
 	innerWidth := width - 6
 
 	var content string
 	switch s.view {
 	case settingsViewMenu:
-		content = s.viewMenu(currentMaxIter, currentReviewRounds, mainAgent, reviewer)
+		content = s.viewMenu(currentMaxIter, currentReviewRounds, mainAgent, reviewer, programmer)
 	case settingsViewProviders:
 		content = s.viewProviders()
 	case settingsViewProviderMenu:
@@ -595,7 +644,7 @@ func (s Settings) View(width int, currentKey string, currentMaxIter int, current
 	case settingsViewCopilotAuth:
 		content = s.viewCopilotAuth()
 	case settingsViewAgents:
-		content = s.viewAgents(mainAgent, reviewer)
+		content = s.viewAgents(mainAgent, reviewer, programmer)
 	case settingsViewAgentMain:
 		content = s.viewAgentMain(mainAgent)
 	case settingsViewAgentMainModels:
@@ -604,12 +653,16 @@ func (s Settings) View(width int, currentKey string, currentMaxIter int, current
 		content = s.viewAgentReviewer(reviewer)
 	case settingsViewAgentReviewerModels:
 		content = s.viewAgentReviewerModels(reviewer)
+	case settingsViewAgentProgrammer:
+		content = s.viewAgentProgrammer(programmer)
+	case settingsViewAgentProgrammerModels:
+		content = s.viewAgentProgrammerModels(programmer)
 	}
 
 	return settingsStyle.Width(innerWidth).Render(content)
 }
 
-func (s Settings) viewMenu(currentMaxIter int, currentReviewRounds int, mainAgent agentEntry, reviewer *agentEntry) string {
+func (s Settings) viewMenu(currentMaxIter int, currentReviewRounds int, mainAgent agentEntry, reviewer *agentEntry, programmer *agentEntry) string {
 	title := settingsTitleStyle.Render("Settings")
 
 	reviewerSummary := "disabled"
@@ -617,12 +670,17 @@ func (s Settings) viewMenu(currentMaxIter int, currentReviewRounds int, mainAgen
 		reviewerSummary = fmt.Sprintf("%s:%s", reviewer.Provider, reviewer.Model)
 	}
 
+	programmerSummary := "not set"
+	if programmer != nil {
+		programmerSummary = fmt.Sprintf("%s:%s", programmer.Provider, programmer.Model)
+	}
+
 	var b strings.Builder
 	b.WriteString("  " + title + "\n\n")
 	fmt.Fprintf(&b, "  [1] Providers      %s\n", dimStyle.Render(s.selectedProvider))
 	fmt.Fprintf(&b, "  [2] Max Iters      %s\n", dimStyle.Render(strconv.Itoa(currentMaxIter)))
 	fmt.Fprintf(&b, "  [3] Review Rounds  %s\n", dimStyle.Render(strconv.Itoa(currentReviewRounds)))
-	fmt.Fprintf(&b, "  [4] Agents         %s\n", dimStyle.Render(fmt.Sprintf("main=%s:%s, reviewer=%s", mainAgent.Provider, mainAgent.Model, reviewerSummary)))
+	fmt.Fprintf(&b, "  [4] Agents         %s\n", dimStyle.Render(fmt.Sprintf("main=%s:%s, reviewer=%s, programmer=%s", mainAgent.Provider, mainAgent.Model, reviewerSummary, programmerSummary)))
 
 	if s.feedback != "" {
 		b.WriteString("\n")
@@ -780,7 +838,7 @@ func (s Settings) viewCopilotAuth() string {
 	return b.String()
 }
 
-func (s Settings) viewAgents(mainAgent agentEntry, reviewer *agentEntry) string {
+func (s Settings) viewAgents(mainAgent agentEntry, reviewer *agentEntry, programmer *agentEntry) string {
 	title := settingsTitleStyle.Render("Agents")
 
 	reviewerSummary := "disabled"
@@ -788,10 +846,16 @@ func (s Settings) viewAgents(mainAgent agentEntry, reviewer *agentEntry) string 
 		reviewerSummary = fmt.Sprintf("%s:%s", reviewer.Provider, reviewer.Model)
 	}
 
+	programmerSummary := "not set"
+	if programmer != nil {
+		programmerSummary = fmt.Sprintf("%s:%s", programmer.Provider, programmer.Model)
+	}
+
 	var b strings.Builder
 	b.WriteString("  " + title + "\n\n")
 	fmt.Fprintf(&b, "  [1] Main Agent    %s\n", dimStyle.Render(fmt.Sprintf("%s:%s", mainAgent.Provider, mainAgent.Model)))
 	fmt.Fprintf(&b, "  [2] Review Agent  %s\n", dimStyle.Render(reviewerSummary))
+	fmt.Fprintf(&b, "  [3] Programmer    %s\n", dimStyle.Render(programmerSummary))
 	b.WriteString("\n")
 	b.WriteString("  " + settingsKeyHintStyle.Render("esc: back"))
 	return b.String()
@@ -866,6 +930,46 @@ func (s Settings) viewAgentReviewerModels(reviewer *agentEntry) string {
 		current = reviewer.Model
 	}
 	return s.viewModelList(title, current, true)
+}
+
+func (s Settings) viewAgentProgrammer(programmer *agentEntry) string {
+	title := settingsTitleStyle.Render("Programmer Agent Provider")
+
+	current := "not set"
+	if programmer != nil {
+		current = fmt.Sprintf("%s:%s", programmer.Provider, programmer.Model)
+	}
+
+	var b strings.Builder
+	b.WriteString("  " + title + "\n\n")
+	fmt.Fprintf(&b, "  Current: %s\n\n", dimStyle.Render(current))
+
+	for i, p := range s.providers {
+		cursor := "  "
+		style := settingsItemStyle
+		if i == s.agentProviderCursor {
+			cursor = settingsCursorStyle.Render("> ")
+			style = settingsSelectedStyle
+		}
+		suffix := ""
+		if programmer != nil && p == programmer.Provider {
+			suffix = dimStyle.Render(" (current)")
+		}
+		b.WriteString("  " + cursor + style.Render(titleCase(p)) + suffix + "\n")
+	}
+
+	b.WriteString("\n")
+	b.WriteString("  " + settingsKeyHintStyle.Render("up/down: navigate  enter: select  esc: back"))
+	return b.String()
+}
+
+func (s Settings) viewAgentProgrammerModels(programmer *agentEntry) string {
+	title := settingsTitleStyle.Render("Programmer Agent Model")
+	current := ""
+	if programmer != nil {
+		current = programmer.Model
+	}
+	return s.viewModelList(title, current, false)
 }
 
 func (s Settings) viewModelList(title, currentModel string, allowDisable bool) string {

@@ -15,6 +15,7 @@ import (
 	"github.com/nullism/goder/internal/db"
 	"github.com/nullism/goder/internal/llm/agent"
 	"github.com/nullism/goder/internal/llm/planner"
+	"github.com/nullism/goder/internal/llm/prompt"
 	"github.com/nullism/goder/internal/llm/provider"
 	"github.com/nullism/goder/internal/message"
 	"github.com/nullism/goder/internal/permission"
@@ -34,6 +35,15 @@ type programRef struct {
 func (r *programRef) Store(p *tea.Program) { r.p.Store(p) }
 func (r *programRef) Load() *tea.Program   { return r.p.Load() }
 
+type runRole int
+
+const (
+	runRoleNone runRole = iota
+	runRoleMain
+	runRolePlanner
+	runRoleProgrammer
+)
+
 // Model is the top-level bubbletea model for the application.
 type Model struct {
 	// Core state
@@ -49,7 +59,8 @@ type Model struct {
 	database *db.DB
 	sessions *session.Service
 	registry *tools.Registry
-	prov     provider.Provider
+	mainProv provider.Provider
+	progProv provider.Provider
 	permSvc  *permission.Service
 
 	// Review agent
@@ -62,10 +73,12 @@ type Model struct {
 	// Agent state
 	agentCancel     context.CancelFunc
 	thinking        bool                // true while agent is processing
+	activeRunRole   runRole             // current executing role
 	streamBuf       string              // accumulates streaming text (plain string to avoid strings.Builder copy panic)
 	permReq         *permission.Request // pending permission request
-	reviewActive    bool                // true while reviewed planning flow is in progress
-	planSynthesized bool                // true after reviewed plan is produced; next user msg goes to main agent
+	pendingPlan     string              // latest reviewed plan awaiting user approval
+	planAwaitingAck bool                // true when a reviewed plan is awaiting explicit user approval
+	approvedPlanRun bool                // true during a turn where user approved pending plan
 
 	// Settings overlay
 	settings     Settings
@@ -81,7 +94,7 @@ type Model struct {
 }
 
 // New creates and returns a new Model.
-func New(cfg config.Config, database *db.DB, sessions *session.Service, registry *tools.Registry, prov provider.Provider, permSvc *permission.Service, reviewerSpec *planner.ReviewerSpec) Model {
+func New(cfg config.Config, database *db.DB, sessions *session.Service, registry *tools.Registry, mainProv provider.Provider, progProv provider.Provider, permSvc *permission.Service, reviewerSpec *planner.ReviewerSpec) Model {
 	return Model{
 		keys:         DefaultKeyMap(),
 		input:        NewInput(),
@@ -91,7 +104,8 @@ func New(cfg config.Config, database *db.DB, sessions *session.Service, registry
 		database:     database,
 		sessions:     sessions,
 		registry:     registry,
-		prov:         prov,
+		mainProv:     mainProv,
+		progProv:     progProv,
 		permSvc:      permSvc,
 		reviewerSpec: reviewerSpec,
 		progRef:      &programRef{}, // shared across Bubble Tea value copies
@@ -118,6 +132,12 @@ func rebuildReviewerSpec(cfg config.Config) *planner.ReviewerSpec {
 	}
 
 	return &planner.ReviewerSpec{Provider: reviewProv, Model: reviewerModel}
+}
+
+func rebuildProgrammerProvider(cfg config.Config) (provider.Provider, error) {
+	progProvider := cfg.ProgrammerAgentProvider()
+	progModel := cfg.ProgrammerAgentModel()
+	return provider.New(progProvider, cfg.APIKeyFor(progProvider), progModel)
 }
 
 // Init implements tea.Model.
@@ -242,8 +262,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Save the token for Copilot. Provider settings are connection-only,
 		// so this does not change the selected main agent provider/model.
 		m.cfg.SetAPIKeyFor("copilot", msg.token)
-		if m.prov != nil && m.prov.Name() == "copilot" {
-			m.prov.SetAPIKey(msg.token)
+		if m.mainProv != nil && m.mainProv.Name() == "copilot" {
+			m.mainProv.SetAPIKey(msg.token)
+		}
+		if m.progProv != nil && m.progProv.Name() == "copilot" {
+			m.progProv.SetAPIKey(msg.token)
+		}
+		if m.reviewerSpec != nil && m.reviewerSpec.Provider != nil && m.reviewerSpec.Provider.Name() == "copilot" {
+			m.reviewerSpec.Provider.SetAPIKey(msg.token)
 		}
 
 		// Persist to config file.
@@ -367,55 +393,21 @@ func (m *Model) submitPrompt(prompt string) tea.Cmd {
 	// Create agent
 	ctx, cancel := context.WithCancel(context.Background())
 	m.agentCancel = cancel
+	m.approvedPlanRun = m.planAwaitingAck && isPlanApprovalPrompt(prompt)
 
-	// Choose between reviewed-plan flow and single-agent loop.
-	// After the reviewed plan is produced, the next user message
-	// (e.g. "go ahead") should go to the main agent for execution,
-	// not back to the review loop.
-	var eventCh <-chan agent.Event
+	eventCh := m.startMainOrchestrator(ctx, history, sessionID)
+	return m.forwardEvents(eventCh)
+}
 
-	useReviewedPlanning := m.reviewerSpec != nil && !m.planSynthesized
-	if useReviewedPlanning {
-		useReviewedPlanning = m.cfg.AlwaysReview || shouldUseReviewedPlanning(prompt)
-	}
-
-	if useReviewedPlanning {
-		m.reviewActive = true
-		pl := planner.New(planner.Config{
-			MainProvider:  m.prov,
-			ReviewerSpec:  m.reviewerSpec,
-			Registry:      m.registry,
-			WorkDir:       m.cfg.WorkDir,
-			MainModel:     m.cfg.MainAgentModel(),
-			MaxTokens:     m.cfg.MaxTokens,
-			MaxIterations: m.cfg.MaxIterations,
-			ReviewRounds:  m.cfg.ReviewIterations,
-		})
-		eventCh = pl.Run(ctx, history, sessionID)
-	} else {
-		m.reviewActive = false
-		ag := agent.New(agent.Config{
-			Provider:      m.prov,
-			Registry:      m.registry,
-			PermSvc:       m.permSvc,
-			WorkDir:       m.cfg.WorkDir,
-			Model:         m.cfg.MainAgentModel(),
-			MaxTokens:     m.cfg.MaxTokens,
-			MaxIterations: m.cfg.MaxIterations,
-		})
-		eventCh = ag.Run(ctx, history, sessionID)
-	}
-
+func (m *Model) forwardEvents(eventCh <-chan agent.Event) tea.Cmd {
 	program := m.progRef.Load()
 
-	// Return a command that reads from the agent event channel
 	return func() tea.Msg {
 		event, ok := <-eventCh
 		if !ok {
 			return agentEventMsg{event: agent.Event{Type: agent.EventAgentDone}}
 		}
 
-		// Start a goroutine to forward remaining events
 		go func() {
 			for ev := range eventCh {
 				if program != nil {
@@ -428,10 +420,140 @@ func (m *Model) submitPrompt(prompt string) tea.Cmd {
 	}
 }
 
+func (m *Model) startMainOrchestrator(ctx context.Context, history []message.Message, sessionID string) <-chan agent.Event {
+	augmented := append([]message.Message{}, history...)
+	approval := "false"
+	if m.approvedPlanRun {
+		approval = "true"
+	}
+	note := "ORCHESTRATOR_CONTEXT\n" +
+		fmt.Sprintf("always_review_mode: %t\n", m.cfg.AlwaysReview) +
+		fmt.Sprintf("pending_reviewed_plan: %t\n", m.planAwaitingAck) +
+		"user_approved_latest_plan: " + approval
+	if m.planAwaitingAck && m.pendingPlan != "" {
+		note += "\n\nLatest reviewed plan:\n" + m.pendingPlan
+	}
+	augmented = append(augmented, message.NewUserMessage(sessionID, note))
+
+	ag := agent.New(agent.Config{
+		Provider:      m.mainProv,
+		Registry:      m.registry.ReadOnly(),
+		PermSvc:       nil,
+		WorkDir:       m.cfg.WorkDir,
+		Model:         m.cfg.MainAgentModel(),
+		MaxTokens:     m.cfg.MaxTokens,
+		MaxIterations: m.cfg.MaxIterations,
+		SystemPrompt:  prompt.BuildOrchestratorPrompt(m.cfg.WorkDir, m.registry),
+	})
+	m.activeRunRole = runRoleMain
+	return ag.Run(ctx, augmented, sessionID)
+}
+
+func (m *Model) startPlanner(ctx context.Context, history []message.Message, sessionID string) <-chan agent.Event {
+	pl := planner.New(planner.Config{
+		MainProvider:  m.mainProv,
+		ReviewerSpec:  m.reviewerSpec,
+		Registry:      m.registry,
+		WorkDir:       m.cfg.WorkDir,
+		MainModel:     m.cfg.MainAgentModel(),
+		MaxTokens:     m.cfg.MaxTokens,
+		MaxIterations: m.cfg.MaxIterations,
+		ReviewRounds:  m.cfg.ReviewIterations,
+	})
+	m.activeRunRole = runRolePlanner
+	return pl.Run(ctx, history, sessionID)
+}
+
+func (m *Model) startProgrammer(ctx context.Context, history []message.Message, sessionID, plan string) <-chan agent.Event {
+	augmented := append([]message.Message{}, history...)
+	instruction := "Implement the approved plan below using available tools.\n\nApproved plan:\n" + plan
+	augmented = append(augmented, message.NewUserMessage(sessionID, instruction))
+
+	ag := agent.New(agent.Config{
+		Provider:      m.progProv,
+		Registry:      m.registry,
+		PermSvc:       m.permSvc,
+		WorkDir:       m.cfg.WorkDir,
+		Model:         m.cfg.ProgrammerAgentModel(),
+		MaxTokens:     m.cfg.MaxTokens,
+		MaxIterations: m.cfg.MaxIterations,
+	})
+	m.activeRunRole = runRoleProgrammer
+	return ag.Run(ctx, augmented, sessionID)
+}
+
+type orchestratorDecision struct {
+	Action  string
+	Message string
+	Plan    string
+}
+
+func parseOrchestratorDecision(content string) orchestratorDecision {
+	decision := orchestratorDecision{Action: "RESPOND", Message: strings.TrimSpace(content)}
+	lines := strings.Split(content, "\n")
+
+	planStart := -1
+	for i, raw := range lines {
+		line := strings.TrimSpace(raw)
+		switch {
+		case strings.HasPrefix(line, "ACTION:"):
+			decision.Action = strings.ToUpper(strings.TrimSpace(strings.TrimPrefix(line, "ACTION:")))
+		case strings.HasPrefix(line, "MESSAGE:"):
+			decision.Message = strings.TrimSpace(strings.TrimPrefix(line, "MESSAGE:"))
+		case strings.HasPrefix(line, "PLAN:"):
+			planStart = i
+		}
+	}
+
+	if planStart >= 0 && planStart+1 < len(lines) {
+		decision.Plan = strings.TrimSpace(strings.Join(lines[planStart+1:], "\n"))
+	}
+	if decision.Message == "" {
+		decision.Message = strings.TrimSpace(content)
+	}
+
+	switch decision.Action {
+	case "RESPOND", "RUN_REVIEW_LOOP", "CALL_PROGRAMMER":
+	default:
+		decision.Action = "RESPOND"
+	}
+
+	return decision
+}
+
+func isPlanApprovalPrompt(prompt string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(prompt))
+	if normalized == "" {
+		return false
+	}
+
+	approvals := []string{
+		"yes",
+		"y",
+		"approve",
+		"approved",
+		"looks good",
+		"go ahead",
+		"do it",
+		"proceed",
+		"ship it",
+	}
+	for _, a := range approvals {
+		if normalized == a || strings.Contains(normalized, a) {
+			return true
+		}
+	}
+
+	return false
+}
+
 // handleAgentEvent processes events from the agent loop.
 func (m Model) handleAgentEvent(event agent.Event) (tea.Model, tea.Cmd) {
 	switch event.Type {
 	case agent.EventStreamText:
+		if m.activeRunRole == runRoleMain {
+			return m, nil
+		}
 		m.streamBuf += event.Text
 		// Update the streaming message in the list
 		m.msgs.UpdateStreaming(m.streamBuf)
@@ -450,6 +572,9 @@ func (m Model) handleAgentEvent(event agent.Event) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case agent.EventPersistMessage:
+		if m.activeRunRole == runRoleMain {
+			return m, nil
+		}
 		// Persist intermediate messages (assistant with tool calls, tool results)
 		if event.FinalMessage != nil {
 			if err := m.sessions.AddMessage(*event.FinalMessage); err != nil {
@@ -470,41 +595,189 @@ func (m Model) handleAgentEvent(event agent.Event) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case agent.EventAgentDone:
-		m.thinking = false
-		if event.FinalMessage != nil {
-			// Persist the assistant message
-			if err := m.sessions.AddMessage(*event.FinalMessage); err != nil {
-				m.err = err
+		switch m.activeRunRole {
+		case runRoleMain:
+			if event.FinalMessage == nil {
+				m.thinking = false
+				m.streamBuf = ""
+				m.activeRunRole = runRoleNone
+				m.approvedPlanRun = false
+				return m, m.listenForPermissions()
 			}
-			m.tokenTotal += event.FinalMessage.TotalTokens
-			if event.FinalMessage.Model != "" {
-				if m.tokenTotalByModel == nil {
-					m.tokenTotalByModel = make(map[string]int)
+
+			decision := parseOrchestratorDecision(event.FinalMessage.Content)
+			if decision.Message == "" {
+				decision.Message = "Done."
+			}
+
+			switch decision.Action {
+			case "RUN_REVIEW_LOOP":
+				if m.reviewerSpec == nil {
+					msg := message.NewAssistantMessage(event.FinalMessage.SessionID, "Reviewer is not configured; continuing without review loop.", nil)
+					msg.Model = m.cfg.MainAgentModel()
+					if err := m.sessions.AddMessage(msg); err != nil {
+						m.err = err
+					}
+					m.msgs.AddMessage(msg)
+					m.thinking = false
+					m.streamBuf = ""
+					m.activeRunRole = runRoleNone
+					m.approvedPlanRun = false
+					return m, m.listenForPermissions()
 				}
-				m.tokenTotalByModel[event.FinalMessage.Model] += event.FinalMessage.TotalTokens
+
+				history, err := m.sessions.GetMessages()
+				if err != nil {
+					m.thinking = false
+					m.streamBuf = ""
+					m.activeRunRole = runRoleNone
+					m.approvedPlanRun = false
+					return m, func() tea.Msg { return errMsg(fmt.Errorf("loading history: %w", err)) }
+				}
+
+				ctx, cancel := context.WithCancel(context.Background())
+				m.agentCancel = cancel
+				m.streamBuf = ""
+				eventCh := m.startPlanner(ctx, history, m.sessions.CurrentID())
+				return m, m.forwardEvents(eventCh)
+
+			case "CALL_PROGRAMMER":
+				if !m.approvedPlanRun {
+					denied := message.NewAssistantMessage(event.FinalMessage.SessionID, "I can only call the programmer after you explicitly approve the reviewed plan.", nil)
+					denied.Model = m.cfg.MainAgentModel()
+					if err := m.sessions.AddMessage(denied); err != nil {
+						m.err = err
+					}
+					m.msgs.AddMessage(denied)
+					m.thinking = false
+					m.streamBuf = ""
+					m.activeRunRole = runRoleNone
+					m.approvedPlanRun = false
+					return m, m.listenForPermissions()
+				}
+
+				plan := strings.TrimSpace(decision.Plan)
+				if plan == "" {
+					plan = strings.TrimSpace(m.pendingPlan)
+				}
+				if plan == "" {
+					noPlan := message.NewAssistantMessage(event.FinalMessage.SessionID, "No approved plan is available to implement.", nil)
+					noPlan.Model = m.cfg.MainAgentModel()
+					if err := m.sessions.AddMessage(noPlan); err != nil {
+						m.err = err
+					}
+					m.msgs.AddMessage(noPlan)
+					m.thinking = false
+					m.streamBuf = ""
+					m.activeRunRole = runRoleNone
+					m.approvedPlanRun = false
+					return m, m.listenForPermissions()
+				}
+
+				progProvider := m.cfg.ProgrammerAgentProvider()
+				if m.cfg.APIKeyFor(progProvider) == "" {
+					missing := message.NewAssistantMessage(event.FinalMessage.SessionID, fmt.Sprintf("No API key configured for programmer provider %q.", progProvider), nil)
+					missing.Model = m.cfg.MainAgentModel()
+					if err := m.sessions.AddMessage(missing); err != nil {
+						m.err = err
+					}
+					m.msgs.AddMessage(missing)
+					m.thinking = false
+					m.streamBuf = ""
+					m.activeRunRole = runRoleNone
+					m.approvedPlanRun = false
+					return m, m.listenForPermissions()
+				}
+
+				history, err := m.sessions.GetMessages()
+				if err != nil {
+					m.thinking = false
+					m.streamBuf = ""
+					m.activeRunRole = runRoleNone
+					m.approvedPlanRun = false
+					return m, func() tea.Msg { return errMsg(fmt.Errorf("loading history: %w", err)) }
+				}
+
+				ctx, cancel := context.WithCancel(context.Background())
+				m.agentCancel = cancel
+				m.planAwaitingAck = false
+				m.pendingPlan = ""
+				m.streamBuf = ""
+				eventCh := m.startProgrammer(ctx, history, m.sessions.CurrentID(), plan)
+				return m, m.forwardEvents(eventCh)
+
+			default:
+				assistantMsg := message.NewAssistantMessage(event.FinalMessage.SessionID, decision.Message, nil)
+				assistantMsg.Model = m.cfg.MainAgentModel()
+				assistantMsg.InputTokens = event.FinalMessage.InputTokens
+				assistantMsg.OutputTokens = event.FinalMessage.OutputTokens
+				assistantMsg.TotalTokens = event.FinalMessage.TotalTokens
+				if err := m.sessions.AddMessage(assistantMsg); err != nil {
+					m.err = err
+				}
+				m.tokenTotal += assistantMsg.TotalTokens
+				if assistantMsg.Model != "" {
+					if m.tokenTotalByModel == nil {
+						m.tokenTotalByModel = make(map[string]int)
+					}
+					m.tokenTotalByModel[assistantMsg.Model] += assistantMsg.TotalTokens
+				}
+				m.msgs.AddMessage(assistantMsg)
+				m.thinking = false
+				m.streamBuf = ""
+				m.activeRunRole = runRoleNone
+				m.approvedPlanRun = false
+				return m, m.listenForPermissions()
 			}
-			// Finalize the streaming message
-			m.msgs.FinalizeStreaming(event.FinalMessage.Content)
-		}
-		m.streamBuf = ""
 
-		// Track reviewed-plan state transitions:
-		// - If the review flow just finished, mark that a plan was produced
-		//   so the next user message goes to the main agent for implementation.
-		// - If the main agent just finished executing (after a prior plan),
-		//   reset so the next fresh task dispatches to the review flow again.
-		if m.reviewActive {
-			m.reviewActive = false
-			m.planSynthesized = true
-		} else {
-			m.planSynthesized = false
-		}
+		case runRolePlanner:
+			m.thinking = false
+			if event.FinalMessage != nil {
+				if err := m.sessions.AddMessage(*event.FinalMessage); err != nil {
+					m.err = err
+				}
+				m.tokenTotal += event.FinalMessage.TotalTokens
+				if event.FinalMessage.Model != "" {
+					if m.tokenTotalByModel == nil {
+						m.tokenTotalByModel = make(map[string]int)
+					}
+					m.tokenTotalByModel[event.FinalMessage.Model] += event.FinalMessage.TotalTokens
+				}
+				m.msgs.FinalizeStreaming(event.FinalMessage.Content)
+				m.pendingPlan = event.FinalMessage.Content
+				m.planAwaitingAck = true
+			}
+			m.streamBuf = ""
+			m.activeRunRole = runRoleNone
+			m.approvedPlanRun = false
+			return m, m.listenForPermissions()
 
-		return m, m.listenForPermissions()
+		case runRoleProgrammer, runRoleNone:
+			m.thinking = false
+			if event.FinalMessage != nil {
+				if err := m.sessions.AddMessage(*event.FinalMessage); err != nil {
+					m.err = err
+				}
+				m.tokenTotal += event.FinalMessage.TotalTokens
+				if event.FinalMessage.Model != "" {
+					if m.tokenTotalByModel == nil {
+						m.tokenTotalByModel = make(map[string]int)
+					}
+					m.tokenTotalByModel[event.FinalMessage.Model] += event.FinalMessage.TotalTokens
+				}
+				m.msgs.FinalizeStreaming(event.FinalMessage.Content)
+			}
+			m.streamBuf = ""
+			m.activeRunRole = runRoleNone
+			m.approvedPlanRun = false
+			return m, m.listenForPermissions()
+		}
 
 	case agent.EventAgentError:
 		m.thinking = false
 		m.streamBuf = ""
+		m.activeRunRole = runRoleNone
+		m.approvedPlanRun = false
 		errText := "Agent error"
 		if event.Error != nil {
 			errText = fmt.Sprintf("Error: %s", event.Error.Error())
@@ -607,6 +880,18 @@ func (m Model) handleSettingsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, fetchModelsCmd(context.Background(), tmpProv.ListModels)
 	}
 
+	// Handle transition to programmer model selection (trigger fetch)
+	if prevView != settingsViewAgentProgrammerModels && m.settings.view == settingsViewAgentProgrammerModels {
+		provName := m.settings.AgentProviderPick()
+		apiKey := m.cfg.APIKeyFor(provName)
+		tmpProv, err := provider.New(provName, apiKey, "")
+		if err != nil {
+			m.settings.HandleModelsLoaded(nil, fmt.Errorf("provider error: %s", err.Error()))
+			return m, nil
+		}
+		return m, fetchModelsCmd(context.Background(), tmpProv.ListModels)
+	}
+
 	// Handle API key save on enter in API key view
 	if m.settings.view == settingsViewAPIKey && msg.String() == "enter" {
 		apiKey := m.settings.APIKeyValue()
@@ -621,8 +906,11 @@ func (m Model) handleSettingsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 		// Update config and active provider if applicable
 		m.cfg.SetAPIKeyFor(selectedProvider, apiKey)
-		if m.prov != nil && selectedProvider == m.prov.Name() {
-			m.prov.SetAPIKey(apiKey)
+		if m.mainProv != nil && selectedProvider == m.mainProv.Name() {
+			m.mainProv.SetAPIKey(apiKey)
+		}
+		if m.progProv != nil && selectedProvider == m.progProv.Name() {
+			m.progProv.SetAPIKey(apiKey)
 		}
 		if m.reviewerSpec != nil && m.reviewerSpec.Provider != nil && selectedProvider == m.reviewerSpec.Provider.Name() {
 			m.reviewerSpec.Provider.SetAPIKey(apiKey)
@@ -700,8 +988,11 @@ func (m Model) handleSettingsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.settings.SetFeedback(fmt.Sprintf("Provider error: %s", err.Error()), true)
 			return m, cmd
 		}
-		m.prov = newProv
+		m.mainProv = newProv
 		m.reviewerSpec = rebuildReviewerSpec(m.cfg)
+		if rebuiltProg, progErr := rebuildProgrammerProvider(m.cfg); progErr == nil {
+			m.progProv = rebuiltProg
+		}
 
 		if err := config.Save(m.cfg); err != nil {
 			m.settings.SetFeedback(fmt.Sprintf("Save failed: %s", err.Error()), true)
@@ -730,6 +1021,33 @@ func (m Model) handleSettingsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 
 		m.settings.SetFeedback(fmt.Sprintf("Review agent set to %s:%s", provName, selected), false)
+		m.settings.view = settingsViewAgents
+		return m, cmd
+	}
+
+	// Handle programmer model selection on enter
+	if m.settings.view == settingsViewAgentProgrammerModels && msg.String() == "enter" {
+		selected := m.settings.SelectedModel()
+		if selected == "" {
+			return m, cmd
+		}
+
+		provName := m.settings.AgentProviderPick()
+		m.cfg.Agents.Programmer = &config.AgentSpec{Provider: provName, Model: selected}
+
+		newProg, err := provider.New(provName, m.cfg.APIKeyFor(provName), selected)
+		if err != nil {
+			m.settings.SetFeedback(fmt.Sprintf("Provider error: %s", err.Error()), true)
+			return m, cmd
+		}
+		m.progProv = newProg
+
+		if err := config.Save(m.cfg); err != nil {
+			m.settings.SetFeedback(fmt.Sprintf("Save failed: %s", err.Error()), true)
+			return m, cmd
+		}
+
+		m.settings.SetFeedback(fmt.Sprintf("Programmer agent set to %s:%s", provName, selected), false)
 		m.settings.view = settingsViewAgents
 		return m, cmd
 	}
@@ -813,11 +1131,15 @@ func (m Model) View() string {
 		if m.cfg.Agents.Reviewer != nil {
 			reviewer = &agentEntry{Provider: m.cfg.ReviewerAgentProvider(), Model: m.cfg.ReviewerAgentModel()}
 		}
+		programmer := &agentEntry{Provider: m.cfg.ProgrammerAgentProvider(), Model: m.cfg.ProgrammerAgentModel()}
+		if programmer.Provider == "" || programmer.Model == "" {
+			programmer = nil
+		}
 		selectedProvider := m.settings.SelectedProvider()
 		if selectedProvider == "" {
 			selectedProvider = m.cfg.MainAgentProvider()
 		}
-		inputView = m.settings.View(m.width, m.cfg.APIKeyFor(selectedProvider), m.cfg.MaxIterations, m.cfg.ReviewIterations, mainAgent, reviewer)
+		inputView = m.settings.View(m.width, m.cfg.APIKeyFor(selectedProvider), m.cfg.MaxIterations, m.cfg.ReviewIterations, mainAgent, reviewer, programmer)
 	} else if m.permReq != nil {
 		inputView = m.renderPermissionDialog()
 	} else if m.thinking {

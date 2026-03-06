@@ -37,10 +37,12 @@ func main() {
 	registry := tools.DefaultRegistry(cfg.WorkDir)
 	permSvc := permission.NewService()
 
-	// Initialize LLM provider
-	prov, err := provider.New(cfg.Provider, cfg.APIKeyFor(cfg.Provider), cfg.Model)
+	// Initialize main orchestrator provider/model.
+	mainProvName := cfg.MainAgentProvider()
+	mainModel := cfg.MainAgentModel()
+	mainProv, err := provider.New(mainProvName, cfg.APIKeyFor(mainProvName), mainModel)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		fmt.Fprintf(os.Stderr, "error creating main agent provider (%s:%s): %v\n", mainProvName, mainModel, err)
 		os.Exit(1)
 	}
 
@@ -57,19 +59,17 @@ func main() {
 		}
 	}
 
-	// If a main agent is configured with a different provider/model, use that
-	mainProvName := cfg.MainAgentProvider()
-	mainModel := cfg.MainAgentModel()
-	if mainProvName != cfg.Provider || mainModel != cfg.Model {
-		prov, err = provider.New(mainProvName, cfg.APIKeyFor(mainProvName), mainModel)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "error creating main agent provider: %v\n", err)
-			os.Exit(1)
-		}
+	// Initialize programmer provider/model.
+	programmerProvider := cfg.ProgrammerAgentProvider()
+	programmerModel := cfg.ProgrammerAgentModel()
+	programmerProv, err := provider.New(programmerProvider, cfg.APIKeyFor(programmerProvider), programmerModel)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error creating programmer agent provider (%s:%s): %v\n", programmerProvider, programmerModel, err)
+		os.Exit(1)
 	}
 
 	// Create the TUI model
-	model := tui.New(cfg, database, sessionSvc, registry, prov, permSvc, reviewerSpec)
+	model := tui.New(cfg, database, sessionSvc, registry, mainProv, programmerProv, permSvc, reviewerSpec)
 
 	// Create the program
 	p := tea.NewProgram(

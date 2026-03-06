@@ -1,13 +1,13 @@
 # Agent Architecture
 
-Goder supports two execution modes:
+Goder uses three logical roles:
 
-1. **Single-agent loop** (default): the main agent plans and implements directly.
-2. **Main + Review loop**: the main agent drafts a plan, a review agent critiques it, and the cycle iterates for a configured number of rounds before a final summarized plan is shown to the user.
+1. **Main (orchestrator)**: decides workflow and can inspect with read-only tools.
+2. **Reviewer**: critiques plans in the review loop with read-only tools.
+3. **Programmer**: writes code and may use write/exec tools.
 
-When a reviewer is configured, goder can still bypass the review loop for simple informational questions and tiny low-risk edits unless `alwaysReview` is enabled.
-
-When no review agent is configured, goder runs in single-agent mode.
+The main agent decides when to trigger a plan review loop.
+After a reviewed plan is produced, programmer execution is allowed only after explicit user approval.
 
 ## Configuration
 
@@ -26,6 +26,10 @@ When no review agent is configured, goder runs in single-agent mode.
     "reviewer": {
       "provider": "copilot",
       "model": "claude-sonnet-4.5"
+    },
+    "programmer": {
+      "provider": "openai",
+      "model": "gpt-4.1"
     }
   }
 }
@@ -35,6 +39,7 @@ Environment overrides:
 
 - `GODER_MAIN_PROVIDER`, `GODER_MAIN_MODEL`
 - `GODER_REVIEWER_PROVIDER`, `GODER_REVIEWER_MODEL`
+- `GODER_PROGRAMMER_PROVIDER`, `GODER_PROGRAMMER_MODEL`
 - `GODER_REVIEW_ITERATIONS`
 - `GODER_ALWAYS_REVIEW`
 
@@ -42,16 +47,16 @@ Legacy `GODER_PLANNING_AGENTS` is still read for backward compatibility (first e
 
 ## Review Loop Behavior
 
-1. Main agent creates a plan draft using read-only tools.
-2. Review agent evaluates intent alignment, maintainability, and obvious security risks.
-3. If reviewer says `REVISE`, main agent revises and another round begins.
-4. If reviewer says `APPROVE`, goder summarizes the agreed plan with proposed file changes and asks the user whether to proceed.
-5. If rounds are exhausted, goder still summarizes the best draft and includes open concerns.
+1. Main orchestrator decides whether to respond directly, run review loop, or request programmer execution.
+2. If review loop is triggered, main drafts and reviewer critiques iteratively.
+3. If reviewer says `REVISE`, another round begins.
+4. If reviewer says `APPROVE` (or rounds exhaust), goder summarizes the plan and asks the user whether to proceed.
+5. Programmer execution is only allowed after explicit user approval.
 
 ## Safety Model
 
-- During planning/review rounds, agents only receive `Registry.ReadOnly()` tools.
-- File edits and command execution happen only after user approval in the normal main-agent execution loop.
+- Main and reviewer agents only receive `Registry.ReadOnly()` tools.
+- Only programmer receives the full tool registry (including write/exec tools), subject to permission checks.
 
 ## Key Files
 

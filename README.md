@@ -5,13 +5,13 @@
 
 goder is a terminal coding agent written in Go.
 
-It runs in your current working directory, supports tool-driven code changes, and can use a **main + reviewer** planning flow for substantial implementation tasks.
+It runs in your current working directory, supports tool-driven code changes, and supports a **main + reviewer + programmer** architecture.
 
 ## Highlights
 
 - Go implementation (no React render loop in terminal)
 - Linear, transparent output with visible tool-call results
-- Optional reviewed planning loop (main agent proposes, reviewer critiques)
+- Main orchestrator with optional reviewed planning loop and dedicated programmer agent
 - Works directly against files in the current project directory
 
 ## Installation
@@ -40,9 +40,9 @@ At startup, goder:
 1. Loads config (`defaults < config file < env vars`)
 2. Opens/creates SQLite at `DBPath()` (under the configured data dir)
 3. Initializes session, tools, and permission services
-4. Creates the base provider from top-level `provider`/`model`
+4. Initializes the main orchestrator provider/model (`agents.main` or top-level fallback)
 5. Optionally initializes a reviewer provider/model if reviewer config is present
-6. Optionally overrides the main provider/model with `agents.main`
+6. Initializes the programmer provider/model (`agents.programmer` or main fallback)
 7. Starts the TUI
 
 If reviewer initialization fails, goder warns and continues with reviewer disabled.
@@ -99,6 +99,8 @@ Agent-specific overrides:
 - `GODER_MAIN_MODEL`
 - `GODER_REVIEWER_PROVIDER`
 - `GODER_REVIEWER_MODEL`
+- `GODER_PROGRAMMER_PROVIDER`
+- `GODER_PROGRAMMER_MODEL`
 
 Legacy compatibility:
 
@@ -130,18 +132,23 @@ You can also set `providerKeys` in config for per-provider credentials.
     "reviewer": {
       "provider": "anthropic",
       "model": "claude-sonnet-4-20250514"
+    },
+    "programmer": {
+      "provider": "openai",
+      "model": "gpt-4.1"
     }
   }
 }
 ```
 
-## Main/reviewer behavior
+## Agent behavior
 
+- **Main (orchestrator)** always runs with read-only tools and decides whether to respond, run review loop, or call programmer.
 - **Reviewer enabled** when `agents.reviewer` exists and reviewer model is non-empty.
-- Reviewer provider falls back to main provider if omitted.
-- Main provider/model fall back to top-level `provider`/`model` if `agents.main` is omitted.
-- `alwaysReview: true` forces all prompts through reviewed planning.
-- `alwaysReview: false` allows simple requests to skip review.
+- **Programmer** provider/model can be set independently via `agents.programmer`; falls back to main if omitted.
+- Main and reviewer receive read-only tools only.
+- Programmer receives full tools (write/exec still permission-gated).
+- Programmer execution is allowed only after the user explicitly approves the reviewed plan.
 
 ## Built-in tools
 

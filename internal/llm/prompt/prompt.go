@@ -150,3 +150,32 @@ func BuildPlanSummaryPrompt(workDir string) string {
 
 	return sb.String()
 }
+
+// BuildOrchestratorPrompt assembles the system prompt for the main orchestrator.
+func BuildOrchestratorPrompt(workDir string, registry *tools.Registry) string {
+	var sb strings.Builder
+
+	sb.WriteString(namedPrompt("orchestrator"))
+	sb.WriteString("\n\n")
+
+	// Environment info
+	sb.WriteString("# Environment\n\n")
+	fmt.Fprintf(&sb, "- Working directory: %s\n", workDir)
+	fmt.Fprintf(&sb, "- Platform: %s/%s\n", runtime.GOOS, runtime.GOARCH)
+	fmt.Fprintf(&sb, "- Date: %s\n", time.Now().Format("Mon Jan 2 2006"))
+	sb.WriteString("\n")
+	sb.WriteString("The working directory is the root of the project. ")
+	sb.WriteString("Use relative paths when referring to files.\n\n")
+
+	// Available tools (read-only + orchestration tools only)
+	sb.WriteString("# Available Tools\n\n")
+	for _, t := range registry.All() {
+		if t.RequiresPermission() {
+			continue
+		}
+		fmt.Fprintf(&sb, "## %s\n", t.Name())
+		fmt.Fprintf(&sb, "%s\n\n", t.Description())
+	}
+
+	return sb.String()
+}
