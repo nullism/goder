@@ -805,20 +805,21 @@ func (s Settings) viewProviderMenu(currentKey string) string {
 
 	var b strings.Builder
 	b.WriteString("  " + title + "\n\n")
-	if s.selectedProvider == "copilot" {
+	switch s.selectedProvider {
+	case "copilot":
 		authLabel := "Authenticate"
 		if currentKey != "" {
 			authLabel = "Re-authenticate"
 		}
 		fmt.Fprintf(&b, "  [1] %s  %s\n", authLabel, dimStyle.Render(masked))
-	} else if s.selectedProvider == "openai" {
+	case "openai":
 		authLabel := "Authenticate"
 		if currentKey != "" {
 			authLabel = "Re-authenticate"
 		}
 		fmt.Fprintf(&b, "  [1] %s  %s\n", authLabel, dimStyle.Render(masked))
 		fmt.Fprintf(&b, "  [2] API Key       %s\n", dimStyle.Render(masked))
-	} else {
+	default:
 		fmt.Fprintf(&b, "  [1] API Key     %s\n", dimStyle.Render(masked))
 	}
 	b.WriteString("\n")

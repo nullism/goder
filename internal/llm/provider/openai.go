@@ -226,6 +226,13 @@ func (p *OpenAIProvider) SendMessage(ctx context.Context, req Request) (<-chan S
 		Store:           false,
 	}
 
+	// The ChatGPT OAuth Codex endpoint does not support the
+	// max_output_tokens parameter; zero it so the omitempty tag
+	// drops it from the serialised JSON.
+	if p.oauthCodexMode {
+		respReq.MaxOutputTokens = 0
+	}
+
 	body, err := json.Marshal(respReq)
 	if err != nil {
 		return nil, fmt.Errorf("marshaling request: %w", err)
